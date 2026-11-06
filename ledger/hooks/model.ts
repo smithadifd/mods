@@ -525,22 +525,64 @@ export function notesOf(events: readonly Event[]): Note[] {
     })
 }
 
+/** Every `item.spec` version, newest first. A missing or non-string body reads as not recorded. */
+export function specsOf(events: readonly Event[]): Spec[] {
+  return oldestFirstEvents(events)
+    .filter(one => one.kind === 'item.spec')
+    .reverse()
+    .map(event => {
+      const p = payloadOf(event)
+      return {
+        eventId: event.id,
+        recordedAt: event.recordedAt,
+        version: whole(p.version),
+        title: orSummary(text(p.title), event),
+        body: text(p.body_md),
+        bodyRecorded: text(p.body_md) !== '',
+        acceptance: text(p.acceptance),
+        size: text(p.size),
+        mergeClass: text(p.merge_class),
+        source: text(p.source),
+        sourceRev: text(p.source_rev),
+      }
+    })
+}
+
 /** The latest `item.spec`: the item's current spec. */
 export function specOf(events: readonly Event[]): Spec | null {
-  const specs = oldestFirstEvents(events).filter(one => one.kind === 'item.spec')
-  const event = specs[specs.length - 1]
-  if (event === undefined) return null
-  const p = payloadOf(event)
-  return {
-    eventId: event.id,
-    version: whole(p.version),
-    title: orSummary(text(p.title), event),
-    body: text(p.body_md),
-    acceptance: text(p.acceptance),
-    size: text(p.size),
-    mergeClass: text(p.merge_class),
-    source: text(p.source),
-  }
+  return specsOf(events)[0] ?? null
+}
+
+/** True when the current claim was taken against an older spec version than the current one. */
+export function specMoved(events: readonly Event[]): boolean {
+  const current = specOf(events)
+  if (current === null || current.version === null) return false
+  const states = oldestFirstEvents(events).filter(one => one.kind === 'item.state')
+  const latest = states[states.length - 1]
+  if (latest === undefined) return false
+  const p = payloadOf(latest)
+  if (text(p.status) !== 'claimed') return false
+  const built = whole(p.spec_version)
+  return built !== null && built < current.version
+}
+
+/** `v2 · Nov 3 · size S · #51`: one earlier version in one line. */
+export function specLine(spec: Spec): string {
+  const parts = [spec.version === null ? 'v?' : `v${spec.version}`, dayOf(spec.recordedAt)]
+  if (spec.size !== '') parts.push(`size ${spec.size}`)
+  parts.push(`#${spec.eventId}`)
+  return parts.join(' · ')
+}
+
+/** The current version's line: `specLine` plus the merge class, and the source with its rev. */
+export function specMeta(spec: Spec, versions: number): string {
+  const parts = [spec.version === null ? 'v?' : `v${spec.version}`, dayOf(spec.recordedAt)]
+  if (versions > 1) parts[0] += ` of ${versions}`
+  if (spec.size !== '') parts.push(`size ${spec.size}`)
+  if (spec.mergeClass !== '') parts.push(spec.mergeClass)
+  if (spec.source !== '' || spec.sourceRev !== '') parts.push(spec.source !== '' ? `source ${spec.source}${spec.sourceRev !== '' ? `@${spec.sourceRev}` : ''}` : `rev ${spec.sourceRev}`)
+  parts.push(`#${spec.eventId}`)
+  return parts.join(' · ')
 }
 
 /** The options of the ask event `askedEventId`, in full; `null` when the log holds no such ask. */
@@ -779,7 +821,7 @@ export function stripOf(events: readonly Event[] | null): StripEntry[] {
     if (one.section === 'decisions') count = countText(electionsOf(events).length + recordsOf(events).length)
     else if (one.section === 'links') count = countText(linksOf(events).length)
     else if (one.section === 'timeline') count = countText(events.length)
-    else if (one.section === 'spec') count = countText(events.filter(event => event.kind === 'item.spec').length)
+    else if (one.section === 'spec') count = countText(specsOf(events).length)
     else if (one.section === 'ticket') {
       const notes = ticketOf(events).length
       if (notes === 0) continue

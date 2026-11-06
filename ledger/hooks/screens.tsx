@@ -1,6 +1,6 @@
 import type { Elements, RenderElement } from 'claude-code'
 
-import type { AskOption, Decision, Detail, Event, Item, Line, Screen, TimelineOrder, View } from '../types'
+import type { AskOption, Decision, Detail, Event, Item, Line, Screen, Spec, TimelineOrder, View } from '../types'
 import type { Band, Nav, TimelineRow } from './model'
 import {
   SECTION_KEY_PREFIX,
@@ -43,7 +43,11 @@ import {
   recordsOf,
   reviewsOf,
   segments,
+  specLine,
+  specMeta,
+  specMoved,
   specOf,
+  specsOf,
   stampOf,
   stopOf,
   stripOf,
@@ -62,7 +66,7 @@ import {
 } from './model'
 
 /** The elements every screen draws with; the same names on every surface. */
-export type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Input' | 'Select' | 'Link' | 'Code'>
+export type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Input' | 'Select' | 'Link' | 'Code' | 'Markdown'>
 
 /** What a press or a pick does; the hooks module implements it. */
 export type Act = {
@@ -815,8 +819,31 @@ function timelineSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, 
   )
 }
 
-function specSection(ui: Ui, d: Detail): RenderElement {
-  const { Box, Text } = ui
+/** A spec version's body and acceptance criteria as Markdown wrapped to the pane; one dim line when no body was recorded. */
+function specBody(ui: Ui, key: string, spec: Spec, frame: Frame): RenderElement {
+  const { Box, Markdown, Text } = ui
+  const width = Math.max(20, frame.width - 2)
+  return (
+    <Box key={key} flexDirection="column">
+      {spec.bodyRecorded ? (
+        <Box key={`${key}-body`} width={width}>
+          <Markdown key={`${key}-body-md`} text={spec.body} />
+        </Box>
+      ) : (
+        note(ui, `${key}-body-missing`, 'body not recorded', { dimColor: true })
+      )}
+      {spec.acceptance !== '' && <Text bold>Acceptance</Text>}
+      {spec.acceptance !== '' && (
+        <Box key={`${key}-acceptance`} width={width}>
+          <Markdown key={`${key}-acceptance-md`} text={spec.acceptance} />
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+function specSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame): RenderElement {
+  const { Box, Button, Text } = ui
   if (d.eventsError !== null) {
     return (
       <Box key="spec-section" flexDirection="column">
@@ -825,8 +852,8 @@ function specSection(ui: Ui, d: Detail): RenderElement {
       </Box>
     )
   }
+  const all = specsOf(d.events)
   const spec = specOf(d.events)
-  const versions = d.events.filter(one => one.kind === 'item.spec').length
   if (spec === null) {
     return (
       <Box key="spec-section" flexDirection="column">
@@ -835,25 +862,30 @@ function specSection(ui: Ui, d: Detail): RenderElement {
       </Box>
     )
   }
+  const open = new Set(view.openEvents)
+  const earlier = all.slice(1)
   return (
     <Box key="spec-section" flexDirection="column">
-      {sectionHeader(
-        ui,
-        'Spec',
-        `${spec.version === null ? '' : `v${spec.version}`}${versions > 1 ? ` of ${versions}` : ''}${spec.size !== '' ? ` · size ${spec.size}` : ''}${spec.mergeClass !== '' ? ` · ${spec.mergeClass}` : ''} · #${spec.eventId}`,
-        `${SECTION_KEY_PREFIX}spec`,
-      )}
+      {sectionHeader(ui, 'Spec', String(all.length), `${SECTION_KEY_PREFIX}spec`)}
       <Box key="spec" flexDirection="column">
         <Text bold>{spec.title}</Text>
-        {spec.body.split('\n').map((line, index) => (
-          <Text key={`spec-body-${index}`}>{line}</Text>
+        {note(ui, 'spec-meta', specMeta(spec, all.length), { dimColor: true })}
+        {specMoved(d.events) && note(ui, 'spec-moved', 'spec moved', { color: 'warning' })}
+        {specBody(ui, 'spec-current', spec, frame)}
+        {earlier.length > 0 && <Text dimColor>Earlier versions</Text>}
+        {earlier.map(one => (
+          <Box key={`spec-version-${one.eventId}`} flexDirection="column">
+            <Button key={`spec-version-row-${one.eventId}`} plain onPress={() => act.toggleEvent(one.eventId)}>
+              <Text dimColor>{open.has(one.eventId) ? '▾ ' : '▸ '}{specLine(one)}</Text>
+            </Button>
+            {open.has(one.eventId) && (
+              <Box key={`spec-version-open-${one.eventId}`} flexDirection="column" paddingLeft={2}>
+                <Text bold>{one.title}</Text>
+                {specBody(ui, `spec-version-${one.eventId}-text`, one, frame)}
+              </Box>
+            )}
+          </Box>
         ))}
-        {spec.acceptance !== '' && <Text bold>Acceptance</Text>}
-        {spec.acceptance !== '' &&
-          spec.acceptance.split('\n').map((line, index) => (
-            <Text key={`spec-acceptance-${index}`}>{line}</Text>
-          ))}
-        {spec.source !== '' && <Text dimColor>source {spec.source}</Text>}
       </Box>
     </Box>
   )
@@ -1033,7 +1065,7 @@ function item(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
           {decisionsSection(body, d)}
           {linksSection(body, view, d, act, frame, band)}
           {timelineSection(body, view, d, act, frame, band, leading)}
-          {specSection(body, d)}
+          {specSection(body, view, d, act, frame)}
           {ticketSection(body, d)}
           {recordSections(body, d)}
         </Box>

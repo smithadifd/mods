@@ -4,6 +4,7 @@ Release notes, newest first. Each mod carries its own version in its `plugin.jso
 
 ## Unreleased
 
+- ledger: the Item screen's Spec section draws the spec's body and acceptance criteria as Markdown wrapped to the pane, shows the current version with its size, merge class, source and rev, says `spec moved` when the claim was taken against an older version, and lists every earlier version newest first (version, day, size, event id), each expanding to its own body. A spec event with no string body says `body not recorded`. The strip's Spec count is the number of versions.
 - ledger: the Item screen draws links, elections, decision records, the latest stop stamp, tried, reviews, notes and the spec from the item's own events (`export-item`) instead of the resume card, which is bounded to a few hundred words and drops whole sections, links first, without saying so. The card stays the source for the next step, open questions, blockers, duplicated-by and the decayed count.
 - ledger: an ask shows its options; a `url` link target and a stop ref have a copy button; a header line under the title shows the mint source, the created day and, for a claimed item, when the lease ends.
 - ledger: when `export-item` fails or answers without a list of events, the screen says so and keeps the card's sections.
