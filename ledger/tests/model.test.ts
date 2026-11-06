@@ -369,6 +369,13 @@ describe('the item screen projects its sections from the events', () => {
     expect(headerOf(log, 'open').leaseEnds).toBe(null)
     // A later release ends the lease even if the item reads claimed from a stale card.
     expect(headerOf([...log, ev(3, 'item.state', { status: 'open' })], 'claimed').leaseEnds).toBe(null)
+    // A heartbeat after the claim renews the lease; the latest stamp wins, a shorter one or one before the claim does not.
+    const renewed = [...log, ev(4, 'item.progress', { expires_at: '2026-11-07T18:02:00.000Z' }), ev(5, 'item.progress', { expires_at: '2026-11-07T16:00:00.000Z' }), ev(6, 'item.progress', { note: 'no stamp' })]
+    expect(headerOf(renewed, 'claimed').leaseEnds).toBe('2026-11-07T18:02:00.000Z')
+    expect(headerOf([ev(1, 'item.progress', { expires_at: '2026-12-01T00:00:00.000Z' }), ...log], 'claimed').leaseEnds).toBe('2026-11-07T14:02:00.000Z')
+    // A release after the renewal still ends the lease; a renewal from an earlier claim does not carry into a new one.
+    expect(headerOf([...renewed, ev(7, 'item.state', { status: 'open' })], 'claimed').leaseEnds).toBe(null)
+    expect(headerOf([...renewed, ev(7, 'item.state', { status: 'claimed', claim: 'seat2', expires_at: '2026-11-08T09:00:00.000Z' })], 'claimed').leaseEnds).toBe('2026-11-08T09:00:00.000Z')
     expect(headerOf([], 'open')).toEqual({ source: null, createdAt: null, leaseEnds: null })
     expect(headerLine(headerOf(log, 'claimed'))).toMatch(/^minted Oct (29|30|31) from roadmaps\/x\.md:69@abc · lease ends Nov \d+ \d\d:\d\d$/)
     expect(headerLine({ source: null, createdAt: null, leaseEnds: null })).toBe('')

@@ -367,7 +367,15 @@ export function headerOf(events: readonly Event[], status: string): ItemHeader {
     const latest = states[states.length - 1]
     if (latest !== undefined) {
       const p = payloadOf(latest)
-      if (text(p.status) === 'claimed' && text(p.expires_at) !== '') leaseEnds = text(p.expires_at)
+      if (text(p.status) === 'claimed' && text(p.expires_at) !== '') {
+        leaseEnds = text(p.expires_at)
+        // A heartbeat on the current claim renews it: the latest stamp wins, as the ledger's own lease view reads it.
+        for (const one of ordered) {
+          if (one.kind !== 'item.progress' || one.id <= latest.id) continue
+          const renewed = text(payloadOf(one).expires_at)
+          if (renewed > leaseEnds) leaseEnds = renewed
+        }
+      }
     }
   }
   const source = created === undefined ? '' : text(payloadOf(created).source)
