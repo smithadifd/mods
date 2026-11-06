@@ -374,6 +374,34 @@ describe('the ledger pane', () => {
     await ui.unmount()
   })
 
+  test('an expired claim opened from Needs you steps to the next expired claim', async ($, on) => {
+    const doctor = { path: '/db/home.db', schema_version: 9, search: { status: 'current', new_events: 0 }, expired_claims: { status: 'expired', items: [{ item_id: 'A1', holder: 'seat-9', expires_at: '2026-11-05T00:00:00Z' }, { item_id: 'L1', holder: 'seat-8', expires_at: '2026-11-05T00:00:00Z' }] } }
+    engine(on, [], argv => (argv.includes('doctor') ? ok(doctor) : loopReply()(argv)))
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('needs'))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'refresh' })
+    await ui.press({ key: 'expired-A1' })
+    expect(await ui.find({ key: 'prev-item' })).toBe(undefined)
+    expect((await ui.find({ key: 'next-item' }))?.props.hotkey).toBe('f')
+    await ui.unmount()
+  })
+
+  test('a decision opened from the Decisions list steps to the next decision item', async ($, on) => {
+    const two = { decisions: [{ ...DECISIONS.decisions[0]!, decision_event_id: 1, item_id: 'A1' }, { ...DECISIONS.decisions[0]!, decision_event_id: 2, item_id: 'L1' }] }
+    engine(on, [], argv => (argv.includes('decisions') ? ok(two) : loopReply()(argv)))
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('decisions'))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'refresh' })
+    await ui.press({ key: 'decision-row-1' })
+    await ui.press({ key: 'decision-open-1' })
+    // The list holds two items; the one opened from it has a neighbour.
+    const neighbours = await Promise.all([ui.find({ key: 'prev-item' }), ui.find({ key: 'next-item' })])
+    expect(neighbours.filter(one => one !== undefined).length).toBe(1)
+    await ui.unmount()
+  })
+
   test('a command that cannot start is said plainly', async ($, on) => {
     mock.clock(on)
     on('command.register', () => ({ value: { command: 'ledger' } }))
@@ -865,6 +893,21 @@ describe('the item screen: strip, Now and the timeline', () => {
     expect(full).toBeLessThan(100)
     expect(await drawn(down)).toBe(100 + 7)
     await down.unmount()
+  })
+
+  test('an expanded row stays drawn in full when the window moves past it', async ($, on) => {
+    const many = Array.from({ length: 100 }, (_, index) => stamped(100 + index, 'item.note', { text: `note ${index}` }, '2026-10-29T12:00:00Z'))
+    await openL1($, on, loopReply(loopLog(many)))
+    const ui = await $.ui.mount(paneAt(100, 0, 30))
+    await ui.press({ key: 'refresh' })
+    await ui.press({ key: 'event-row-199' })
+    expect(await ui.find({ key: 'event-detail-199' })).toBeDefined()
+    // Oldest first puts the same row far outside the window at the top.
+    await ui.press({ key: 'timeline-order' })
+    expect(await ui.find({ key: 'event-row-190' })).toBe(undefined)
+    expect(await ui.find({ key: 'event-row-199' })).toBeDefined()
+    expect(await ui.find({ key: 'event-detail-199' })).toBeDefined()
+    await ui.unmount()
   })
 
   test('a timeline of 40 rows or fewer is drawn whole', async ($, on) => {

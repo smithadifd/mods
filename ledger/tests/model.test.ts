@@ -628,6 +628,8 @@ describe('the strip, navigation, links and the ticket pass', () => {
     ])
     expect(grantOf(log, 5)).toBe('grant:g1')
     expect(grantOf(log, 4)).toBe('')
+    const kinds = [ev(6, 'decision.elected', { question: 'c', chosen: 'y', question_id: 'countersign:c1' }), ev(7, 'decision.elected', { question: 'r', chosen: 'y', question_id: 'rung:r2' }), ev(8, 'decision.elected', { question: 'o', chosen: 'y', question_id: 'other:o1' })]
+    expect([grantOf(kinds, 6), grantOf(kinds, 7), grantOf(kinds, 8)]).toEqual(['countersign:c1', 'rung:r2', ''])
     expect(electionsOf(log)[1]!.questionId).toBe('grant:g1')
   })
 

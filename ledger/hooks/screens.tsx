@@ -378,7 +378,7 @@ function needs(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
       {sectionHeader(ui, 'Expired claims', found.expired.length === 0 ? '' : String(found.expired.length))}
       {found.expired.length === 0 && <Text dimColor>No claim has outlived its lease.</Text>}
       {found.expired.map(one => (
-        <Button key={`expired-${one.itemId}`} plain onPress={() => act.openItem(one.itemId)}>
+        <Button key={`expired-${one.itemId}`} plain onPress={() => act.openItem(one.itemId, found.expired.map(each => each.itemId))}>
           <Text color="error">✖</Text> {fit(one.itemId, idWidth)} <Text dimColor>{one.holder}</Text> lease ended {one.expiresAt === '' ? '' : ageOf(one.expiresAt, frame.now)} ago
         </Button>
       ))}
@@ -798,7 +798,7 @@ function timelineSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, 
           {group.rows.map(row => {
             const at = index
             index += 1
-            if (at < range.from || at >= range.to) {
+            if ((at < range.from || at >= range.to) && !open.has(row.id)) {
               return note(ui, `event-${row.id}`, `${`#${row.id}`.padStart(7)} ${cut(row.kind, 18)}`, { dimColor: true })
             }
             return timelineRow(ui, row, open.has(row.id), act, frame, band)
@@ -1071,12 +1071,12 @@ function decisions(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
         {pages > 1 && <Button key="prev" label="Prev" hotkey="k" onPress={() => act.page(-1)} />}
       </Box>
       {list.length === 0 && <Text dimColor>No decision records yet.</Text>}
-      {shown.map(one => decisionRow(ui, one, view, act, frame, idWidth, effectWidth, narrow))}
+      {shown.map(one => decisionRow(ui, one, view, act, frame, idWidth, effectWidth, narrow, list.map(each => each.itemId)))}
     </Box>
   )
 }
 
-function decisionRow(ui: Ui, one: Decision, view: View, act: Act, frame: Frame, idWidth: number, effectWidth: number, narrow: boolean): RenderElement {
+function decisionRow(ui: Ui, one: Decision, view: View, act: Act, frame: Frame, idWidth: number, effectWidth: number, narrow: boolean, siblings: readonly string[]): RenderElement {
   const { Box, Button, Text } = ui
   const isOpen = view.expanded === one.eventId
   const tags = one.tags.map(tag => `${tag.type}:${tag.id}`).join(' ')
@@ -1104,7 +1104,7 @@ function decisionRow(ui: Ui, one: Decision, view: View, act: Act, frame: Frame, 
           {one.result !== null && <Text dimColor>result: {one.result}</Text>}
           {one.evidence !== null && <Text dimColor>evidence: {one.evidence}</Text>}
           <Box>
-            <Button key={`decision-open-${one.eventId}`} label={`Open ${one.itemId}`} onPress={() => act.openItem(one.itemId)} />
+            <Button key={`decision-open-${one.eventId}`} label={`Open ${one.itemId}`} onPress={() => act.openItem(one.itemId, siblings)} />
           </Box>
         </Box>
       )}
