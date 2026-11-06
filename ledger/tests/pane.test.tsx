@@ -1280,3 +1280,92 @@ describe('a view stored by an earlier version', () => {
     await ui.unmount()
   })
 })
+
+const SESSION_LOG = {
+  completeness: { events_on_item: 7, events_returned: 7, events_decayed: 0 },
+  events: [
+    { ...event(1, 'item.created', { type: 'initiative', title: 'title of X1' }), session: 'sess-old' },
+    { ...event(2, 'item.note', { text: 'first' }), session: 'sess-mid' },
+    { ...event(3, 'item.linked', { rel: 'session', target: 'sess-linked' }) },
+    { ...event(4, 'item.note', { text: 'second' }), session: 'sess-old' },
+    { ...event(5, 'item.linked', { rel: 'session', target: 'has a space' }) },
+    { ...event(6, 'item.note', { text: 'third' }), session: 42 },
+    { ...event(7, 'item.note', { text: 'fourth' }), session: 'two words' },
+  ],
+}
+
+describe('the item screen copies a resume line for each session it names', () => {
+  async function open(log: Ran, copies: string[], $: Parameters<TestBody>[0], on: On, seen: string[][] = []) {
+    engine(on, seen, boundedReply(log), copies)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('X1'))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'refresh' })
+    return ui
+  }
+
+  test('Now lists each usable session once, the latest named first, and each copies exactly its line', async ($, on) => {
+    const copies: string[] = []
+    const ui = await open(ok(SESSION_LOG), copies, $, on)
+    // Latest event per session: sess-linked (3) is older than sess-old (4) and newer than sess-mid (2); the unusable ones sit at 5, 6 and 7.
+    const rows = (await ui.findAll({ type: 'Button' })).filter(one => (one.key ?? '').startsWith('copy-resume-session-'))
+    expect(rows.length).toBe(3)
+    expect(rows.map(one => one.props.label)).toEqual(['Copy resume line', 'Copy resume line', 'Copy resume line'])
+    // The unusable rows come first by their event ids (7, 6, 5), so the usable ones are at positions 3, 4 and 5.
+    await ui.press({ key: 'copy-resume-session-3' })
+    await ui.press({ key: 'copy-resume-session-4' })
+    await ui.press({ key: 'copy-resume-session-5' })
+    expect(copies).toEqual(['claude --resume sess-old', 'claude --resume sess-linked', 'claude --resume sess-mid'])
+    await ui.unmount()
+  })
+
+  test('a session value that cannot be resumed offers no copy and says so', async ($, on) => {
+    const ui = await open(ok(SESSION_LOG), [], $, on)
+    for (const index of [0, 1, 2]) {
+      expect((await ui.find({ key: `session-${index}` }))?.text).toContain('session id unusable')
+      expect(await ui.find({ key: `copy-resume-session-${index}` })).toBe(undefined)
+    }
+    expect((await ui.find({ key: 'session-3' }))?.text).toContain('sess-old')
+    await ui.unmount()
+  })
+
+  test('an item with no session anywhere says no sessions recorded', async ($, on) => {
+    const log = ok({ completeness: { events_on_item: 1, events_returned: 1, events_decayed: 0 }, events: [event(1, 'item.created', { type: 'initiative', title: 't' })] })
+    const ui = await open(log, [], $, on)
+    expect((await ui.find({ key: 'sessions-none' }))?.text).toContain('no sessions recorded')
+    expect(await ui.find({ key: 'copy-resume-session-0' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('an expanded event that records a session copies its resume line; an unusable one does not', async ($, on) => {
+    const copies: string[] = []
+    const ui = await open(ok(SESSION_LOG), copies, $, on)
+    await ui.press({ key: 'event-row-2' })
+    await ui.press({ key: 'event-row-6' })
+    await ui.press({ key: 'copy-resume-event-2' })
+    expect(copies).toEqual(['claude --resume sess-mid'])
+    expect(await ui.find({ key: 'copy-resume-event-6' })).toBe(undefined)
+    expect((await ui.find({ key: 'provenance-session-6' }))?.text).toContain('session id unusable')
+    await ui.unmount()
+  })
+
+  test('a session link copies the line built from its target; an unusable target does not', async ($, on) => {
+    const copies: string[] = []
+    const ui = await open(ok(SESSION_LOG), copies, $, on)
+    await ui.press({ key: 'copy-resume-link-3' })
+    expect(copies).toEqual(['claude --resume sess-linked'])
+    expect(await ui.find({ key: 'copy-resume-link-5' })).toBe(undefined)
+    expect((await ui.find({ key: 'link-session-unusable-5' }))?.text).toContain('session id unusable')
+    await ui.unmount()
+  })
+
+  test('the pane runs only the read verbs while it offers resume lines', async ($, on) => {
+    const seen: string[][] = []
+    const ui = await open(ok(SESSION_LOG), [], $, on, seen)
+    await ui.press({ key: 'copy-resume-session-3' })
+    expect(seen.length).toBeGreaterThan(0)
+    for (const argv of seen) expect(argv.some(word => (READ_VERBS as readonly string[]).includes(word))).toBe(true)
+    expect(seen.some(argv => argv.includes('claude'))).toBe(false)
+    await ui.unmount()
+  })
+})

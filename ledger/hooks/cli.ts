@@ -339,6 +339,7 @@ export function parseEvents(data: unknown): { events: Event[]; onItem: number; d
       harness: strOrNull(row.harness),
       model: strOrNull(row.model),
       session: strOrNull(row.session),
+      badSession: row.session !== undefined && row.session !== null && strOrNull(row.session) === null,
       idempotencyKey: str(row.idempotency_key),
       hash: str(row.hash),
       recordedAt: str(row.recorded_at),

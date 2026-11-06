@@ -411,6 +411,66 @@ export function linksOf(events: readonly Event[]): LinkRow[] {
   return rows
 }
 
+/* Sessions: the ids the item's events and links name, each with the line that resumes it. */
+
+/** A session id is usable only as a non-empty string with no whitespace and no control character. */
+const UNUSABLE_SESSION = /[\s\u0000-\u001f\u007f-\u009f]/
+
+/** `claude --resume <session>` for a usable session id; null for anything else, so a malformed command line is never offered. */
+export function resumeLine(session: unknown): string | null {
+  if (typeof session !== 'string' || session === '' || UNUSABLE_SESSION.test(session)) return null
+  return `claude --resume ${session}`
+}
+
+export type SessionRow = { key: string; session: string | null; line: string | null; eventId: number }
+
+/** What the envelope of one event says about its session: nothing (null), or the value as written ('' when it is not a non-empty string). */
+function envelopeSession(event: Event): string | null {
+  if (event.session !== null && event.session !== undefined) return event.session
+  return event.badSession === true ? '' : null
+}
+
+/** The sessions an event names: its envelope's, and, for a session link, the link's target. */
+function mentionsOf(event: Event): unknown[] {
+  const found: unknown[] = []
+  const own = envelopeSession(event)
+  if (own !== null) found.push(own)
+  if (event.kind === 'item.linked') {
+    const p = payloadOf(event)
+    if (p.rel === 'session') found.push(p.target)
+  }
+  return found
+}
+
+function mentionKey(value: unknown): string {
+  return typeof value === 'string' ? `s:${value}` : `x:${JSON.stringify(value) ?? 'undefined'}`
+}
+
+/** The item's distinct sessions once each, the one named by the latest event first. A value that cannot be resumed has `line` null. */
+export function sessionsOf(events: readonly Event[]): SessionRow[] {
+  const latest = new Map<string, SessionRow>()
+  for (const event of events) {
+    for (const value of mentionsOf(event)) {
+      const key = mentionKey(value)
+      const known = latest.get(key)
+      if (known !== undefined && known.eventId >= event.id) continue
+      latest.set(key, { key, session: typeof value === 'string' ? value : null, line: resumeLine(value), eventId: event.id })
+    }
+  }
+  return [...latest.values()].sort((a, b) => b.eventId - a.eventId)
+}
+
+/** For each `session` link event, the resume line its target gives, or null when the target cannot be resumed. */
+export function sessionLinkLines(events: readonly Event[]): Map<number, string | null> {
+  const lines = new Map<number, string | null>()
+  for (const event of events) {
+    if (event.kind !== 'item.linked') continue
+    const p = payloadOf(event)
+    if (p.rel === 'session') lines.set(event.id, resumeLine(p.target))
+  }
+  return lines
+}
+
 /** Every `decision.elected` event: the chosen option, the rejected ones, the scope and the quote reference. */
 export function electionsOf(events: readonly Event[]): Election[] {
   return oldestFirstEvents(events)

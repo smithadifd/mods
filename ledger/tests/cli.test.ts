@@ -257,6 +257,9 @@ describe('export-item provenance', () => {
     })
     expect(parsed.events[0]).toMatchObject({ session: 's-1', idempotencyKey: 'k-5', hash: 'h-5', model: 'm' })
     const bare = parseEvents({ events: [{ id: 6, kind: 'item.note', recorded_at: '2026-10-30T12:00:00Z', payload: {} }] })
-    expect(bare.events[0]).toMatchObject({ session: null, idempotencyKey: '', hash: '' })
+    expect(bare.events[0]).toMatchObject({ session: null, badSession: false, idempotencyKey: '', hash: '' })
+    // A session that is a number or an empty string is told apart from an absent one.
+    const odd = parseEvents({ events: [{ id: 6, kind: 'item.note', session: 7, payload: {} }, { id: 7, kind: 'item.note', session: '', payload: {} }, { id: 8, kind: 'item.note', session: null, payload: {} }] })
+    expect(odd.events.map(one => [one.id, one.session, one.badSession]).sort()).toEqual([[6, null, true], [7, null, true], [8, null, false]])
   })
 })

@@ -38,8 +38,11 @@ import {
   parseCommandArgs,
   prShort,
   recordsOf,
+  resumeLine,
   reviewsOf,
   segments,
+  sessionLinkLines,
+  sessionsOf,
   sortItems,
   spanOf,
   sparkline,
@@ -729,5 +732,71 @@ describe('the strip, navigation, links and the ticket pass', () => {
   test('nothing here throws on a payload that is not an object', () => {
     const odd = [{ ...ev(1, 'loop.done', {}), payload: null as never }, { ...ev(2, 'loop.intent', {}), payload: 'x' as never }, { ...ev(3, 'item.note', {}), payload: [] as never }, ev(4, 'decision.asked', {})]
     expect(() => [timelineOf(odd, 'all', 'newest'), dayGroups(timelineOf(odd, 'all', 'oldest')), stripOf(odd), ticketOf(odd), answeredAsksOf(odd), groupLinks(linksOf(odd))]).not.toThrow()
+  })
+})
+
+describe('sessions: the resume line and the item\'s distinct sessions', () => {
+  function withSession(id: number, kind: string, payload: Record<string, unknown>, session: string | null, badSession = false): Event {
+    return { ...ev(id, kind, payload), session, badSession }
+  }
+
+  test('a usable session id gives exactly `claude --resume <id>`', () => {
+    expect(resumeLine('sess-alpha-1')).toBe('claude --resume sess-alpha-1')
+    expect(resumeLine('0b1f2c3d-aaaa-bbbb-cccc-1234567890ab')).toBe('claude --resume 0b1f2c3d-aaaa-bbbb-cccc-1234567890ab')
+  })
+
+  test('an empty, non-string, spaced or control-character id gives no line and never throws', () => {
+    const unusable: unknown[] = ['', ' ', 'a b', ' lead', 'trail ', 'tab\there', 'line\nbreak', 'cr\rx', 'nul\u0000x', 'esc\u001bx', 'del\u007fx', 'nel\u0085x', 'sep x', 'nbsp x', 42, null, undefined, {}, [], ['s'], true]
+    for (const value of unusable) expect(resumeLine(value)).toBe(null)
+  })
+
+  test('sessions: envelopes and session links are deduplicated, the one named by the latest event first', () => {
+    const rows = sessionsOf([
+      withSession(1, 'item.created', {}, 'sess-a'),
+      withSession(2, 'item.note', {}, 'sess-b'),
+      withSession(3, 'item.note', {}, 'sess-a'),
+      withSession(4, 'item.linked', { rel: 'session', target: 'sess-c' }, null),
+      withSession(5, 'item.linked', { rel: 'pr', target: 'sess-z' }, null),
+      withSession(6, 'item.linked', { rel: 'session', target: 'sess-b' }, null),
+    ])
+    expect(rows.map(one => [one.session, one.eventId, one.line])).toEqual([
+      ['sess-b', 6, 'claude --resume sess-b'],
+      ['sess-c', 4, 'claude --resume sess-c'],
+      ['sess-a', 3, 'claude --resume sess-a'],
+    ])
+  })
+
+  test('sessions: the order does not depend on the order the events arrive in', () => {
+    const events = [withSession(1, 'item.note', {}, 'sess-a'), withSession(2, 'item.note', {}, 'sess-b')]
+    expect(sessionsOf(events).map(one => one.session)).toEqual(['sess-b', 'sess-a'])
+    expect(sessionsOf([...events].reverse()).map(one => one.session)).toEqual(['sess-b', 'sess-a'])
+  })
+
+  test('sessions: none anywhere is an empty list; an event with no session adds nothing', () => {
+    expect(sessionsOf([])).toEqual([])
+    expect(sessionsOf([ev(1, 'item.note', {}), ev(2, 'item.linked', { rel: 'url', target: 'https://example.test' })])).toEqual([])
+  })
+
+  test('sessions: an unusable value is listed without a line, and a bad envelope value is kept apart from an absent one', () => {
+    const rows = sessionsOf([
+      withSession(1, 'item.note', {}, 'has space'),
+      withSession(2, 'item.note', {}, null, true),
+      withSession(3, 'item.linked', { rel: 'session', target: 7 }, null),
+      withSession(4, 'item.linked', { rel: 'session' }, null),
+      withSession(5, 'item.note', {}, null),
+    ])
+    expect(rows.length).toBe(4)
+    expect(rows.every(one => one.line === null)).toBe(true)
+  })
+
+  test('session links: each session link event maps to its line, or null when the target cannot be resumed', () => {
+    const lines = sessionLinkLines([
+      withSession(1, 'item.linked', { rel: 'session', target: 'sess-a' }, null),
+      withSession(2, 'item.linked', { rel: 'session', target: 'a b' }, null),
+      withSession(3, 'item.linked', { rel: 'session', target: '' }, null),
+      withSession(4, 'item.linked', { rel: 'url', target: 'sess-a' }, null),
+      withSession(5, 'item.note', {}, 'sess-a'),
+    ])
+    expect([...lines.entries()]).toEqual([[1, 'claude --resume sess-a'], [2, null], [3, null]])
   })
 })
