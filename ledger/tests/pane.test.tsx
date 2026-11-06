@@ -63,10 +63,11 @@ const CARD = {
 }
 
 const LOG = {
-  completeness: { events_on_item: 2, events_returned: 2, events_decayed: 0 },
+  completeness: { events_on_item: 3, events_returned: 3, events_decayed: 0 },
   events: [
     { id: 1, kind: 'item.created', actor: 'seat-1', harness: 'claude-code', model: null, recorded_at: '2026-11-05T09:00:00Z', payload: { type: 'ticket', title: 'title of A1' } },
     { id: 2, kind: 'item.note', actor: 'seat-1', harness: 'claude-code', model: null, recorded_at: '2026-11-05T10:00:00Z', payload: { text: 'a note on A1' } },
+    { id: 3, kind: 'item.linked', actor: 'seat-1', harness: 'claude-code', model: null, recorded_at: '2026-11-05T10:30:00Z', payload: { rel: 'pr', target: 'https://github.com/o/r/pull/7' } },
   ],
 }
 
@@ -128,11 +129,14 @@ function command(args: string) {
 }
 
 /** The engine beneath the plugin: a clock, a command registry, a pane, a session, and a ledger that answers. */
-function engine(on: On, seen: string[][], reply: (argv: readonly string[]) => Ran = answer): MockClock {
+function engine(on: On, seen: string[][], reply: (argv: readonly string[]) => Ran = answer, copies: string[] = []): MockClock {
   const clock = mock.clock(on)
   on('command.register', () => ({ value: { command: 'ledger' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.copy', () => ({ value: { isCopied: true } }))
+  on('ui.copy', (_, e) => {
+    copies.push(e.text)
+    return { value: { isCopied: true } }
+  })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('process.run', (_, e) => {
     seen.push([...e.argv])
@@ -211,8 +215,8 @@ describe('the ledger pane', () => {
     expect((await ui.find({ type: 'Text', text: /^Build it\.$/ }))?.text).toBe('Build it.')
     expect((await ui.find({ type: 'Text', text: /a note on A1/ }))?.text).toContain('a note on A1')
     expect((await ui.find({ type: 'Link' }))?.props.href).toBe('https://github.com/o/r/pull/7')
-    expect((await ui.find({ type: 'Text', text: /2 events/ }))?.text).toContain('2 events')
-    expect((await ui.findAll({ type: 'Text', text: /^item\.(created|note)\s*$/ })).length).toBe(2)
+    expect((await ui.find({ type: 'Text', text: /3 events/ }))?.text).toContain('3 events')
+    expect((await ui.findAll({ type: 'Text', text: /^item\.(created|note|linked)\s*$/ })).length).toBe(3)
     expect((await ui.find({ type: 'Text', text: /projection/ }))?.text).toContain('the events are the authority')
 
     await ui.press({ key: 'back' })
@@ -387,4 +391,156 @@ describe('the ledger pane', () => {
     expect((await ui.find({ key: 'tab-home' }))?.props.variant).toBe('primary')
     await ui.unmount()
   })
+})
+
+const BOUNDED_CARD = {
+  ...CARD,
+  item_id: 'X1',
+  type: 'initiative',
+  title: 'title of X1',
+  status: 'claimed',
+  claim: 'seat-1',
+  next_step: 'Resume with: ledger resume --item=X1',
+  // The card dropped every one of these to fit its word bound, and says so.
+  links: [{ event_id: 40, rel: 'duplicated-by', target: 'X9' }],
+  notes: [],
+  decisions: [],
+  decision_records: [],
+  tried: [],
+  stop: null,
+  truncated: ['links', 'notes'],
+  open_questions: [
+    {
+      asked_event_id: 3,
+      question: 'Ship it?',
+      ask: 'ship',
+      options: [{ label: 'Ship', description: 'clipped by the card' }],
+      recommendation: 'A',
+      default: 'A',
+      unblocks: '',
+      effort: '',
+      added: '',
+    },
+  ],
+}
+
+function event(id: number, kind: string, payload: Record<string, unknown>): Record<string, unknown> {
+  return { id, kind, actor: 'seat-1', harness: 'claude-code', model: null, recorded_at: '2026-10-30T12:00:00Z', payload }
+}
+
+const MANY_LINKS = Array.from({ length: 21 }, (_, index) => event(100 + index, 'item.linked', { rel: 'item', target: `member-${index}` }))
+
+const BOUNDED_LOG = {
+  completeness: { events_on_item: 30, events_returned: 30, events_decayed: 0 },
+  events: [
+    event(1, 'item.created', { type: 'initiative', title: 'title of X1', source: 'roadmaps/wave.md:69@abc123' }),
+    event(2, 'item.state', { status: 'claimed', claim: 'seat-1', expires_at: '2026-11-07T14:02:00.000Z' }),
+    event(3, 'decision.asked', { question: 'Ship it?', options: [{ label: 'Ship', description: 'ship now' }, { label: 'Wait', description: 'wait a week' }] }),
+    event(4, 'decision.elected', { question: 'Merge now?', chosen: 'merge now', rejected: ['wait', 'close'], scope: 'this PR', quote_ref: 5, asked_event_id: 3 }),
+    event(6, 'decision.recorded', { who: 'Andrew', who_kind: 'person', standing: 'settled', effect: 'ADR accepted', tags: [{ type: 'project', id: 'foundry' }], verbatim: 'accept', phase: 'close' }),
+    event(7, 'item.stopped', { point: 'waiting on review', phase: 'review', skills: ['review'], refs: ['org/repo#7', 'notes/plan.md:3'] }),
+    event(8, 'item.tried', { what: 'bump the pin', outcome: 'tests red', evidence: 'logs/1.txt' }),
+    event(9, 'review.recorded', { round: 1, verdict: 'changes', findings: ['a finding'] }),
+    event(10, 'item.note', { text: 'a plain note' }),
+    event(11, 'item.spec', { version: 1, title: 'the spec', body_md: 'first line\nsecond line', size: 'S' }),
+    event(12, 'item.linked', { rel: 'url', target: 'https://example.test/doc' }),
+    event(13, 'item.linked', { rel: 'url', target: 'notes/local.md' }),
+    ...MANY_LINKS,
+  ],
+}
+
+function boundedReply(log: Ran): (argv: readonly string[]) => Ran {
+  return argv => {
+    const verb = argv.find(word => (READ_VERBS as readonly string[]).includes(word))
+    if (argv.includes('X1') && verb === 'card') return ok(BOUNDED_CARD)
+    if (argv.includes('X1') && verb === 'export-item') return log
+    return answer(argv)
+  }
+}
+
+describe('the item screen draws from the item\'s own events', () => {
+  test('every section the bounded card dropped is drawn from the events, and the card keeps its own', async ($, on) => {
+    engine(on, [], boundedReply(ok(BOUNDED_LOG)))
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('X1'))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'refresh' })
+
+    // The card's own: next step, duplicated-by.
+    expect((await ui.find({ type: 'Text', text: /Resume with/ }))?.text).toContain('ledger resume --item=X1')
+    expect((await ui.find({ key: 'duplicate-0' }))?.text).toContain('X9')
+    // The header line: mint source, created day, lease end.
+    expect((await ui.find({ type: 'Text', text: /^minted / }))?.text).toMatch(/^minted Oct \d+ from roadmaps\/wave\.md:69@abc123 · lease ends Nov \d+ \d\d:\d\d$/)
+    // All 23 links, though the card carried none of them.
+    expect((await ui.findAll({ type: 'Text', text: /^member-\d+$/ })).length).toBe(21)
+    expect((await ui.find({ type: 'Link', text: /example\.test/ }))?.props.href).toBe('https://example.test/doc')
+    // Elections: chosen, rejected, scope and quote reference.
+    const election = await ui.find({ key: 'election-4' })
+    expect(election?.text).toContain('Merge now? → merge now')
+    expect(election?.text).toContain('rejected: wait | close')
+    expect(election?.text).toContain('scope: this PR')
+    expect(election?.text).toContain('on these words: #5')
+    // Decision records, stop, tried, reviews, notes, spec.
+    expect((await ui.find({ key: 'record-6' }))?.text).toContain('ADR accepted')
+    expect((await ui.find({ key: 'stop' }))?.text).toContain('waiting on review')
+    expect((await ui.find({ key: 'tried-8' }))?.text).toContain('outcome: tests red')
+    expect((await ui.find({ key: 'review-9' }))?.text).toContain('a finding')
+    expect((await ui.find({ key: 'note-10' }))?.text).toContain('a plain note')
+    expect((await ui.find({ key: 'spec' }))?.text).toContain('second line')
+    await ui.unmount()
+  })
+
+  test('an ask shows its options in full, from the ask event', async ($, on) => {
+    engine(on, [], boundedReply(ok(BOUNDED_LOG)))
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('X1'))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'refresh' })
+
+    const options = await ui.find({ key: 'options' })
+    expect(options?.text).toContain('A) Ship — ship now')
+    expect(options?.text).toContain('B) Wait — wait a week')
+    expect(options?.text).not.toContain('clipped by the card')
+    await ui.unmount()
+  })
+
+  test('url link targets and stop refs copy', async ($, on) => {
+    const copies: string[] = []
+    engine(on, [], boundedReply(ok(BOUNDED_LOG)), copies)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('X1'))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'refresh' })
+
+    await ui.press({ key: 'copy-link-12' })
+    await ui.press({ key: 'copy-link-13' })
+    await ui.press({ key: 'copy-ref-1' })
+    expect(copies).toEqual(['https://example.test/doc', 'notes/local.md', 'notes/plan.md:3'])
+    // An item link is not copyable.
+    expect(await ui.find({ key: 'copy-link-100' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  const failures: [string, Ran][] = [
+    ['refuses', refused('moving', 'the ledger moved while reading')],
+    ['answers with no event list', ok({ item_id: 'X1' })],
+    ['answers with nothing', ok(null)],
+  ]
+  for (const [name, log] of failures) {
+    test(`an export-item that ${name} says so and keeps the card's own sections`, async ($, on) => {
+      engine(on, [], boundedReply(log))
+      await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+      await $.command.run(command('X1'))
+      const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+      await ui.press({ key: 'refresh' })
+
+      expect((await ui.find({ key: 'events-failed' }))?.text).toContain('could not read the events of X1')
+      expect((await ui.find({ key: 'events-failed' }))?.text).toContain('are not shown')
+      expect((await ui.find({ type: 'Text', text: /Resume with/ }))?.text).toContain('ledger resume --item=X1')
+      expect((await ui.find({ key: 'duplicate-0' }))?.text).toContain('X9')
+      expect(await ui.find({ key: 'event-sections' })).toBe(undefined)
+      expect(await ui.find({ key: 'stop' })).toBe(undefined)
+      await ui.unmount()
+    })
+  }
 })

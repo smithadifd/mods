@@ -154,7 +154,7 @@ describe('the parsers', () => {
     expect(parseDecisions({ decisions: [{ item_id: 'x' }] })).toEqual([])
   })
 
-  test('a card keeps its sections, questions and links with their hrefs', () => {
+  test('a card keeps what only the ledger derives, and never reads the bounded sections it drops', () => {
     const card = parseCard({
       item_id: 'NY-1',
       type: 'decision',
@@ -163,11 +163,11 @@ describe('the parsers', () => {
       owner: null,
       claim: null,
       next_step: 'Answer open questions before continuing.',
-      open_questions: [{ question: 'which?', ask: 'pick one', default: 'hold', recommendation: 'b', unblocks: 'the row', effort: '5 min', added: '2026-09-15', asked_event_id: 3656 }],
+      open_questions: [{ options: [{ label: 'a', description: 'first' }, { description: 'no label' }], question: 'which?', ask: 'pick one', default: 'hold', recommendation: 'b', unblocks: 'the row', effort: '5 min', added: '2026-09-15', asked_event_id: 3656 }],
       blockers: ['NY-0'],
       notes: [{ event_id: 2, text: 'a note' }],
       progress: [],
-      links: [{ rel: 'pr', target: 'https://github.com/o/r/pull/1' }],
+      links: [{ rel: 'pr', target: 'https://github.com/o/r/pull/1' }, { event_id: 8, rel: 'duplicated-by', target: 'NY-9' }],
       decisions: [],
       decision_records: [],
       tried: [],
@@ -179,8 +179,10 @@ describe('the parsers', () => {
     expect(card.questions[0]?.fallback).toBe('hold')
     expect(card.questions[0]?.askedEventId).toBe(3656)
     expect(card.blockers).toEqual([{ eventId: null, text: 'NY-0', href: null }])
-    expect(card.notes).toEqual([{ eventId: 2, text: 'a note', href: null }])
-    expect(card.links[0]).toEqual({ eventId: null, text: 'pr: https://github.com/o/r/pull/1', href: 'https://github.com/o/r/pull/1' })
+    expect(card.questions[0]?.options).toEqual([{ label: 'a', description: 'first' }])
+    expect(card.duplicatedBy).toEqual([{ eventId: 8, text: 'NY-9', href: null }])
+    // The card is bounded: its links, notes, decisions, records, tried and stop are not carried.
+    for (const dropped of ['links', 'notes', 'decisions', 'records', 'tried', 'stop']) expect(dropped in card).toBe(false)
     expect(card.revision).toEqual({ id: 9, hash: 'abc' })
     expect(card.sourceEventIds).toEqual([1, 2])
     expect(card.events).toEqual([])
@@ -195,11 +197,22 @@ describe('the parsers', () => {
         { kind: 'no-id' },
       ],
     })
+    expect(parsed.error).toBe(null)
+    expect(parsed.events[1]?.payload).toEqual({ type: 'ticket', title: 'first\nsecond line' })
     expect(parsed.onItem).toBe(3)
     expect(parsed.decayed).toBe(1)
     expect(parsed.events.map(one => one.id)).toEqual([2, 1])
     expect(parsed.events[1]?.summary).toBe('ticket "first"')
     expect(parsed.events[0]?.summary).toBe('status → closed')
+  })
+
+  test('an export-item answer with no list of events is an error, not an empty log', () => {
+    for (const bad of [null, {}, { events: 'x' }, { completeness: {} }, 'text']) {
+      const parsed = parseEvents(bad)
+      expect(parsed.events).toEqual([])
+      expect(parsed.error).toBe('the ledger answered export-item with no list of events')
+    }
+    expect(parseEvents({ events: [] }).error).toBe(null)
   })
 
   test('summaries name what each kind records', () => {
