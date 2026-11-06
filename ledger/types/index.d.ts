@@ -133,16 +133,19 @@ export type Review = {
 /** One `item.note`; `href` is the first web address in it. */
 export type Note = { eventId: number; text: string; href: string | null }
 
-/** The latest `item.spec`. */
+/** One `item.spec` version; `bodyRecorded` is false when the event carries no string body. */
 export type Spec = {
   eventId: number
+  recordedAt: string
   version: number | null
   title: string
   body: string
+  bodyRecorded: boolean
   acceptance: string
   size: string
   mergeClass: string
   source: string
+  sourceRev: string
 }
 
 /** An item's resume card plus its log. */
@@ -215,6 +218,8 @@ export type View = {
   timelineKind: string
   /** Timeline rows expanded, by event id, so a re-read keeps them open. */
   openEvents: number[]
+  /** Earlier spec versions expanded in the Spec section, by event id; kept apart from the Timeline's rows. */
+  openSpecs: number[]
   expanded: number | null
   query: string
   hits: Hit[]

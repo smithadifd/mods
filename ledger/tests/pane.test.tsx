@@ -675,6 +675,16 @@ function loopReply(log: Ran = loopLog(), card: Ran = ok(LOOP_CARD)): (argv: read
   }
 }
 
+/** An item with three spec versions and a claim taken against `built` (default 1). */
+function specLog(built = 1): Ran {
+  return loopLog([
+    stamped(20, 'item.spec', { version: 1, title: 'First', body_md: 'first body', size: 'S' }, '2026-10-28T12:30:00Z'),
+    stamped(21, 'item.spec', { version: 2, title: 'Second', body_md: 'second **body**', size: 'L' }, '2026-10-29T12:30:00Z'),
+    stamped(22, 'item.spec', { version: 3, title: 'Third', body_md: '# Third\n\nthird body', acceptance: '- it works', size: 'M', merge_class: 'MC-2', source: 'plan.md', source_rev: 'abc123' }, '2026-10-30T12:30:00Z'),
+    stamped(23, 'item.state', { status: 'claimed', claim: 'seat-1', expires_at: FAR_FUTURE, spec_version: built }, '2026-10-30T12:31:00Z'),
+  ])
+}
+
 /** The pane's props at another width, or scrolled. */
 function paneAt(columns: number, offset = 0, bodyRows = 30) {
   return { ...PANE, props: { ...PANE.props, bodyColumns: columns, scroll: { offset, bodyRows } }, surface: 'terminal' as const }
@@ -701,6 +711,78 @@ describe('the item screen: strip, Now and the timeline', () => {
       ['Spec –', 'p'],
     ])
     expect(await ui.find({ key: 'strip-ticket' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('the Spec section draws the current version, every earlier one newest first, and the spec as Markdown', async ($, on) => {
+    await openL1($, on, loopReply(specLog()))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+
+    expect((await ui.find({ key: 'strip-spec' }))?.props.label).toBe('Spec 3')
+    const meta = (await ui.find({ key: 'spec-meta' }))?.text ?? ''
+    for (const part of ['v3 of 3', 'size M', 'MC-2', 'source plan.md@abc123', '#22']) expect(meta).toContain(part)
+    expect((await ui.find({ key: 'spec-moved' }))?.text).toBe('spec moved')
+    // The body and the acceptance criteria are Markdown elements wrapped to the pane width.
+    const current = await ui.find({ key: 'spec-current-body-md' })
+    expect(current?.type).toBe('Markdown')
+    expect(current?.props.text).toBe('# Third\n\nthird body')
+    expect((await ui.find({ key: 'spec-current-acceptance-md' }))?.props.text).toBe('- it works')
+    expect((await ui.find({ key: 'spec-current-body' }))?.props.width).toBe(98)
+    // Earlier versions, newest first, one line each; their bodies are not drawn until pressed.
+    const rows = await ui.findAll({ type: 'Button', text: /^[▸▾] v\d+ · / })
+    expect(rows.length).toBe(2)
+    expect(rows[0]?.text).toMatch(/^▸ v2 · Oct \d+ · size L · #21$/)
+    expect(rows[1]?.text).toMatch(/^▸ v1 · Oct \d+ · size S · #20$/)
+    expect(await ui.find({ key: 'spec-version-21-text-body-md' })).toBe(undefined)
+    await ui.press({ key: 'spec-version-row-21' })
+    expect((await ui.find({ key: 'spec-version-21-text-body-md' }))?.props.text).toBe('second **body**')
+    expect(await ui.find({ key: 'spec-version-20-text-body-md' })).toBe(undefined)
+    // The expansion survives a re-read and folds on a second press.
+    await ui.press({ key: 'refresh' })
+    expect(await ui.find({ key: 'spec-version-21-text-body-md' })).toBeDefined()
+    await ui.press({ key: 'spec-version-row-21' })
+    expect(await ui.find({ key: 'spec-version-21-text-body-md' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('opening an earlier spec version leaves the Timeline row closed, and the reverse', async ($, on) => {
+    await openL1($, on, loopReply(specLog()))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    await ui.press({ key: 'spec-version-row-21' })
+    expect(await ui.find({ key: 'spec-version-21-text-body-md' })).toBeDefined()
+    expect(await ui.find({ key: 'event-detail-21' })).toBe(undefined)
+    await ui.press({ key: 'spec-version-row-21' })
+    await ui.press({ key: 'event-row-20' })
+    expect(await ui.find({ key: 'event-detail-20' })).toBeDefined()
+    expect(await ui.find({ key: 'spec-version-20-text-body-md' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('the Spec section says nothing moved when the claim was taken against the current version', async ($, on) => {
+    await openL1($, on, loopReply(specLog(3)))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect(await ui.find({ key: 'spec-meta' })).toBeDefined()
+    expect(await ui.find({ key: 'spec-moved' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('a spec event with no usable body shows its metadata and says the body was not recorded', async ($, on) => {
+    const log = loopLog([
+      stamped(20, 'item.spec', { version: 1, title: 'no body at all', size: 'S' }, '2026-10-29T10:00:00Z'),
+      stamped(21, 'item.spec', { version: 2, title: 'number body', body_md: 42, acceptance: 'still criteria', size: 'M' }, '2026-10-29T11:00:00Z'),
+    ])
+    await openL1($, on, loopReply(log))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: 'spec-meta' }))?.text).toContain('v2 of 2')
+    expect((await ui.find({ key: 'spec-current-body-missing' }))?.text).toBe('body not recorded')
+    expect(await ui.find({ key: 'spec-current-body-md' })).toBe(undefined)
+    expect((await ui.find({ key: 'spec-current-acceptance-md' }))?.props.text).toBe('still criteria')
+    await ui.press({ key: 'spec-version-row-20' })
+    expect((await ui.find({ key: 'spec-version-20-text-body-missing' }))?.text).toBe('body not recorded')
     await ui.unmount()
   })
 
@@ -743,6 +825,7 @@ describe('the item screen: strip, Now and the timeline', () => {
       timelineOrder: 'newest',
       timelineKind: 'all',
       openEvents: [],
+      openSpecs: [],
       expanded: null,
       query: '',
       hits: [],
@@ -1155,6 +1238,45 @@ describe('the item screen: stale and failed reads', () => {
     expect(await ui.find({ key: 'event-row-3' })).toBeDefined()
     await ui.press({ key: 'event-row-1' })
     expect(await ui.find({ key: 'event-detail-1' })).toBeDefined()
+    await ui.unmount()
+  })
+})
+
+describe('a view stored by an earlier version', () => {
+  const stored = {
+    screen: 'item', isOpen: true, loading: false, error: null, loadedAt: null, doctor: null,
+    items: [], ready: [], decisions: [], typeFilter: 'all', statusFilter: 'all', standingFilter: 'all',
+    page: 0, itemId: 'L1', item: null, itemLoading: false, itemError: null, itemReadAt: null,
+    siblings: [], history: [], timelineOrder: 'newest', timelineKind: 'all', openEvents: [],
+    expanded: null, query: '', hits: [], searched: null, verify: null, verifying: false,
+  }
+  const VIEW = { plugin: 'ledger', key: 'view' } as const
+
+  async function openWith(shape: string, $: Parameters<TestBody>[0], on: On) {
+    engine(on, [], loopReply())
+    // The engine's store answers the pane's read of its view with a value kept under `shape`.
+    on('state.get', VIEW, async (_, e, next) => {
+      const real = await next(e)
+      // Until the pane writes its own view, the store holds the seeded one.
+      if (real.value?.value !== undefined) return real
+      return { value: { value: { shape, value: stored }, version: real.value?.version ?? 0 } } as never
+    })
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    return ui
+  }
+
+  test('a value kept under the current tag is resumed on its item screen', async ($, on) => {
+    const ui = await openWith('view-4', $, on)
+    expect(await ui.find({ key: 'strip-now' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a value kept under the earlier view-3 tag is declined: the pane opens on its default view', async ($, on) => {
+    const ui = await openWith('view-3', $, on)
+    expect(await ui.find({ key: 'strip-now' })).toBe(undefined)
+    expect(await ui.find({ key: 'tile-ready' })).toBeDefined()
     await ui.unmount()
   })
 })

@@ -43,7 +43,11 @@ import {
   sortItems,
   spanOf,
   sparkline,
+  specLine,
+  specMeta,
+  specMoved,
   specOf,
+  specsOf,
   stampOf,
   stopOf,
   stripOf,
@@ -369,7 +373,81 @@ describe('the item screen projects its sections from the events', () => {
       ev(51, 'item.spec', { version: 2, title: 'v2 title', body_md: 'line one\nline two', acceptance: 'it works', size: 'S', merge_class: 'MC-2', source: 'plan.md' }),
       ev(50, 'item.spec', { version: 1, title: 'v1 title', body_md: 'old' }),
     ])
-    expect(spec).toEqual({ eventId: 51, version: 2, title: 'v2 title', body: 'line one\nline two', acceptance: 'it works', size: 'S', mergeClass: 'MC-2', source: 'plan.md' })
+    expect(spec).toEqual({
+      eventId: 51,
+      recordedAt: '2026-10-30T12:00:00Z',
+      version: 2,
+      title: 'v2 title',
+      body: 'line one\nline two',
+      bodyRecorded: true,
+      acceptance: 'it works',
+      size: 'S',
+      mergeClass: 'MC-2',
+      source: 'plan.md',
+      sourceRev: '',
+    })
+  })
+
+  test('spec versions: every version, newest first, whatever order the events arrive in', () => {
+    const versions = specsOf([
+      ev(50, 'item.spec', { version: 1, title: 'a', body_md: 'x' }),
+      ev(70, 'item.spec', { version: 3, title: 'c', body_md: 'z' }),
+      ev(60, 'item.spec', { version: 2, title: 'b', body_md: 'y' }),
+      ev(61, 'item.note', { text: 'not a spec' }),
+    ])
+    expect(versions.map(one => one.version)).toEqual([3, 2, 1])
+    expect(specsOf([])).toEqual([])
+  })
+
+  test('spec lines: an earlier version in one line; the current one adds the merge class, the source and its rev', () => {
+    const [current] = specsOf([ev(51, 'item.spec', { version: 2, title: 't', body_md: 'b', size: 'M', merge_class: 'MC-2', source: 'plan.md', source_rev: 'abc123' }, '2026-10-30T12:00:00Z')])
+    expect(specLine(current as never)).toBe(`v2 · ${dayOf('2026-10-30T12:00:00Z')} · size M · #51`)
+    expect(specMeta(current as never, 3)).toBe(`v2 of 3 · ${dayOf('2026-10-30T12:00:00Z')} · size M · MC-2 · source plan.md@abc123 · #51`)
+    const [bare] = specsOf([ev(52, 'item.spec', { version: 1, title: 't', body_md: 'b', source_rev: 'def456' })])
+    expect(specMeta(bare as never, 1)).toBe(`v1 · ${dayOf('2026-10-30T12:00:00Z')} · rev def456 · #52`)
+  })
+
+  test('spec moved: only a claim taken against an older version than the current one', () => {
+    const specs = [ev(10, 'item.spec', { version: 1, title: 'a', body_md: 'x' }), ev(20, 'item.spec', { version: 2, title: 'b', body_md: 'y' })]
+    expect(specMoved([...specs, ev(15, 'item.state', { status: 'claimed', claim: 's', spec_version: 1 })])).toBe(true)
+    expect(specMoved([...specs, ev(25, 'item.state', { status: 'claimed', claim: 's', spec_version: 2 })])).toBe(false)
+    expect(specMoved([...specs, ev(15, 'item.state', { status: 'claimed', claim: 's' })])).toBe(false)
+    expect(specMoved([...specs, ev(15, 'item.state', { status: 'open', spec_version: 1 })])).toBe(false)
+    expect(specMoved([specs[0] as Event, ev(15, 'item.state', { status: 'claimed', claim: 's', spec_version: 1 })])).toBe(false)
+    expect(specMoved([])).toBe(false)
+  })
+
+  test('spec moved: a restamped or handed-off claim with no stamp is the same claim; a holder change ends the run', () => {
+    const specs = [ev(10, 'item.spec', { version: 1, title: 'a', body_md: 'x' }), ev(20, 'item.spec', { version: 2, title: 'b', body_md: 'y' })]
+    const stamped = ev(15, 'item.state', { status: 'claimed', claim: 's', spec_version: 1 })
+    expect(specMoved([...specs, stamped, ev(25, 'item.state', { status: 'claimed', claim: 's', expires_at: '2026-11-06T00:00:00Z' })])).toBe(true)
+    expect(specMoved([...specs, stamped, ev(25, 'item.state', { status: 'claimed', claim: 's' }), ev(26, 'item.state', { status: 'claimed', claim: 's', spec_version: 2 })])).toBe(false)
+    expect(specMoved([...specs, stamped, ev(25, 'item.state', { status: 'claimed', claim: 'other' })])).toBe(false)
+    expect(specMoved([...specs, stamped, ev(24, 'item.state', { status: 'open' }), ev(25, 'item.state', { status: 'claimed', claim: 's' })])).toBe(false)
+  })
+
+  test('spec moved: a claimed state with no holder is not a stamped claim', () => {
+    const specs = [ev(10, 'item.spec', { version: 1, title: 'a', body_md: 'x' }), ev(20, 'item.spec', { version: 2, title: 'b', body_md: 'y' })]
+    expect(specMoved([...specs, ev(15, 'item.state', { status: 'claimed', spec_version: 1 })])).toBe(false)
+  })
+
+  test('spec moved: a release ends the run even when it carries the same claim', () => {
+    const specs = [ev(10, 'item.spec', { version: 1, title: 'a', body_md: 'x' }), ev(20, 'item.spec', { version: 2, title: 'b', body_md: 'y' })]
+    const stamped = ev(15, 'item.state', { status: 'claimed', claim: 's', spec_version: 1 })
+    const released = ev(22, 'item.state', { status: 'released', claim: 's' })
+    expect(specMoved([...specs, stamped, released, ev(25, 'item.state', { status: 'claimed', claim: 's' })])).toBe(false)
+  })
+
+  test('spec body: a missing, empty or non-string body reads as not recorded and never throws', () => {
+    const [none, number, empty, fine] = [
+      ev(4, 'item.spec', { version: 4, title: 'd', body_md: 'ok' }),
+      ev(3, 'item.spec', { version: 3, title: 'c', body_md: '' }),
+      ev(2, 'item.spec', { version: 2, title: 'b', body_md: 42 }),
+      ev(1, 'item.spec', { version: 1, title: 'a' }),
+    ].map(one => specsOf([one])[0])
+    expect([none?.bodyRecorded, number?.bodyRecorded, empty?.bodyRecorded, fine?.bodyRecorded]).toEqual([true, false, false, false])
+    expect(none?.body).toBe('ok')
+    expect(number?.body).toBe('')
   })
 
   test('asks: the options come in full from the ask event, or null when the log holds no such ask', () => {

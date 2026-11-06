@@ -50,6 +50,7 @@ const EMPTY: View = {
   timelineOrder: 'newest',
   timelineKind: 'all',
   openEvents: [],
+  openSpecs: [],
   expanded: null,
   query: '',
   hits: [],
@@ -59,7 +60,7 @@ const EMPTY: View = {
 }
 
 // Change the tag when View's fields change: it declines what an earlier version stored.
-const view = atom({ plugin: 'ledger', key: 'view' } as const, EMPTY, { shape: 'view-3' })
+const view = atom({ plugin: 'ledger', key: 'view' } as const, EMPTY, { shape: 'view-4' })
 
 // Each load takes a number; a result from an older load than the latest is dropped.
 let loads = 0
@@ -134,6 +135,7 @@ async function loadItem($: EngineInterface, cli: Cli, id: string): Promise<boole
     item: current.itemId === id ? current.item : null,
     itemReadAt: current.itemId === id ? current.itemReadAt : null,
     openEvents: current.itemId === id ? current.openEvents : [],
+    openSpecs: current.itemId === id ? current.openSpecs : [],
     itemLoading: true,
     itemError: null,
   }))
@@ -245,6 +247,11 @@ function actions($: EngineInterface, cli: Cli): Act {
       void update($, view, (current): View => ({
         ...current,
         openEvents: current.openEvents.includes(eventId) ? current.openEvents.filter(one => one !== eventId) : [...current.openEvents, eventId],
+      })),
+    toggleSpec: eventId =>
+      void update($, view, (current): View => ({
+        ...current,
+        openSpecs: current.openSpecs.includes(eventId) ? current.openSpecs.filter(one => one !== eventId) : [...current.openSpecs, eventId],
       })),
     back: () => void update($, view, (current): View => ({ ...current, screen: 'items' })),
     listWith: (type, status) => void update($, view, (current): View => ({ ...current, screen: 'items', typeFilter: type, statusFilter: status, page: 0 })),
