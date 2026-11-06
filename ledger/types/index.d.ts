@@ -64,6 +64,9 @@ export type Event = {
   actor: string | null
   harness: string | null
   model: string | null
+  session: string | null
+  idempotencyKey: string
+  hash: string
   recordedAt: string
   summary: string
   /** The event's payload as the ledger wrote it; the item screen's sections are projected from it. */
@@ -88,6 +91,7 @@ export type Election = {
   quoteRef: number | null
   quotes: string[]
   askedEventId: number | null
+  questionId: string
 }
 
 /** One `decision.recorded` event with its latest standing and result. */
@@ -165,6 +169,9 @@ export type Detail = {
   eventsDecayed: number
 }
 
+/** The order of the item screen's timeline. */
+export type TimelineOrder = 'newest' | 'oldest'
+
 /** One hit of `ledger search`. */
 export type Hit = {
   id: string
@@ -198,6 +205,16 @@ export type View = {
   item: Detail | null
   itemLoading: boolean
   itemError: string | null
+  /** When the detail on screen was last read well; a refused read keeps that detail, marked stale with this age. */
+  itemReadAt: string | null
+  /** The items the open item can step through: the list it was opened from. */
+  siblings: string[]
+  /** The items left behind by opening one from another; `b` walks back through them. */
+  history: string[]
+  timelineOrder: TimelineOrder
+  timelineKind: string
+  /** Timeline rows expanded, by event id, so a re-read keeps them open. */
+  openEvents: number[]
   expanded: number | null
   query: string
   hits: Hit[]

@@ -1,36 +1,56 @@
 import type { Elements, RenderElement } from 'claude-code'
 
-import type { AskOption, Decision, Detail, Event, Item, Line, Screen, View } from '../types'
+import type { AskOption, Decision, Detail, Event, Item, Line, Screen, TimelineOrder, View } from '../types'
+import type { Band, Nav, TimelineRow } from './model'
 import {
+  SECTION_KEY_PREFIX,
   STANDING_FILTERS,
   STATUSES,
   STATUS_FILTERS,
+  TIMELINE_FILTERS,
+  WINDOW_AFTER,
   ageOf,
+  answeredAsksOf,
+  bandOf,
   barLength,
+  clockOf,
   countByStatus,
   countsByType,
   cut,
   dailyTouches,
+  dayGroups,
   dayOf,
   filterDecisions,
   electionsOf,
   filterItems,
+  firstOpenable,
   fit,
+  grantOf,
+  groupLinks,
   headerLine,
   headerOf,
+  isRecommended,
   kindColor,
+  leaseWords,
   linksOf,
+  navStep,
   needsYou,
   notesOf,
   optionsOf,
   pageCount,
   pageOf,
+  prShort,
   recordsOf,
   reviewsOf,
   segments,
   specOf,
+  stampOf,
   stopOf,
+  stripOf,
+  ticketOf,
+  timelineOf,
   triedOf,
+  windowOf,
   sparkline,
   standingColor,
   standingGlyph,
@@ -48,7 +68,17 @@ export type Ui = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Input' 
 export type Act = {
   go: (screen: Screen) => void
   refresh: () => void
-  openItem: (id: string) => void
+  /** Opens an item; `siblings` is the list it was opened from, which `,` and `.` step through. */
+  openItem: (id: string, siblings?: readonly string[]) => void
+  /** The previous (-1) or next (1) item in the list the open item came from. */
+  step: (delta: number) => void
+  /** Back through the items opened from one another. */
+  historyBack: () => void
+  /** Scrolls the pane to the section with this key. */
+  jump: (key: string) => Promise<void>
+  setTimelineOrder: (order: TimelineOrder) => void
+  setTimelineKind: (kind: string) => void
+  toggleEvent: (eventId: number) => void
   back: () => void
   listWith: (type: string, status: string) => void
   setType: (type: string) => void
@@ -61,8 +91,8 @@ export type Act = {
   copy: (text: string) => void
 }
 
-/** The room the pane has, and the moment ages are counted from. */
-export type Frame = { width: number; rows: number; now: number }
+/** The room the pane has (columns, window rows, the window's offset into the body), and the moment ages are counted from. */
+export type Frame = { width: number; rows: number; now: number; offset: number }
 
 const TABS: readonly { screen: Screen; label: string; hotkey: string }[] = [
   { screen: 'home', label: 'Home', hotkey: 'h' },
@@ -174,10 +204,10 @@ function quickStart(ui: Ui, view: View): RenderElement {
   )
 }
 
-function sectionHeader(ui: Ui, title: string, count: string): RenderElement {
+function sectionHeader(ui: Ui, title: string, count: string, key?: string): RenderElement {
   const { Box, Text } = ui
   return (
-    <Box gap={1} marginTop={1}>
+    <Box key={key} gap={1} marginTop={1}>
       <Text bold>{title}</Text>
       <Text dimColor>{count}</Text>
     </Box>
@@ -302,18 +332,18 @@ function home(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
       })()}
 
       {claimed.length > 0 && sectionHeader(ui, 'Claimed now', String(claimed.length))}
-      {claimed.map(one => itemRow(ui, one, act, frame, 'claim', idWidthOf(claimed.map(each => each.id)), one.claim ?? one.owner ?? '—'))}
+      {claimed.map(one => itemRow(ui, one, act, frame, 'claim', idWidthOf(claimed.map(each => each.id)), one.claim ?? one.owner ?? '—', claimed.map(each => each.id)))}
     </Box>
   )
 }
 
 /** One pressable row: status dot, age, id, a dim detail, the title. */
-function itemRow(ui: Ui, one: Item, act: Act, frame: Frame, prefix: string, idWidth: number, detail: string): RenderElement {
+function itemRow(ui: Ui, one: Item, act: Act, frame: Frame, prefix: string, idWidth: number, detail: string, siblings?: readonly string[]): RenderElement {
   const { Button, Text } = ui
   const detailWidth = 10
   const titleWidth = Math.max(10, frame.width - (2 + 5 + idWidth + 1 + detailWidth + 1) - 1)
   return (
-    <Button key={`${prefix}-${one.id}`} plain onPress={() => act.openItem(one.id)}>
+    <Button key={`${prefix}-${one.id}`} plain onPress={() => act.openItem(one.id, siblings)}>
       <Text color={statusColor(one.status)}>{statusGlyph(one.status)}</Text> <Text dimColor>{fit(ageOf(one.updatedAt, frame.now), 4)}</Text>{' '}
       {fit(one.id, idWidth)} <Text dimColor>{fit(detail, detailWidth)}</Text> {cut(one.title, titleWidth)}
     </Button>
@@ -324,13 +354,14 @@ function needs(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
   const { Box, Button, Text } = ui
   const found = needsYou(view.items, view.doctor)
   const limit = Math.max(5, Math.floor((frame.rows - 10) / 3))
-  const idWidth = idWidthOf([...found.decisions, ...found.blocked, ...found.claimed].map(one => one.id).concat(found.expired.map(one => one.itemId)))
+  const order = [...found.decisions, ...found.blocked, ...found.claimed].map(one => one.id)
+  const idWidth = idWidthOf(order.concat(found.expired.map(one => one.itemId)))
 
   const block = (title: string, rows: Item[], prefix: string, type: string, status: string, empty: string): RenderElement => (
     <Box flexDirection="column">
       {sectionHeader(ui, title, rows.length === 0 ? '' : `${rows.length} · oldest first`)}
       {rows.length === 0 && <Text dimColor>{empty}</Text>}
-      {rows.slice(0, limit).map(one => itemRow(ui, one, act, frame, prefix, idWidth, one.status === 'claimed' ? (one.claim ?? one.owner ?? '—') : one.type))}
+      {rows.slice(0, limit).map(one => itemRow(ui, one, act, frame, prefix, idWidth, one.status === 'claimed' ? (one.claim ?? one.owner ?? '—') : one.type, order))}
       {rows.length > limit && (
         <Button key={`${prefix}-more`} plain dimColor onPress={() => act.listWith(type, status)}>
           {`and ${rows.length - limit} more in Items`}
@@ -347,7 +378,7 @@ function needs(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
       {sectionHeader(ui, 'Expired claims', found.expired.length === 0 ? '' : String(found.expired.length))}
       {found.expired.length === 0 && <Text dimColor>No claim has outlived its lease.</Text>}
       {found.expired.map(one => (
-        <Button key={`expired-${one.itemId}`} plain onPress={() => act.openItem(one.itemId)}>
+        <Button key={`expired-${one.itemId}`} plain onPress={() => act.openItem(one.itemId, found.expired.map(each => each.itemId))}>
           <Text color="error">✖</Text> {fit(one.itemId, idWidth)} <Text dimColor>{one.holder}</Text> lease ended {one.expiresAt === '' ? '' : ageOf(one.expiresAt, frame.now)} ago
         </Button>
       ))}
@@ -391,7 +422,7 @@ function items(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
         {pages > 1 && <Button key="prev" label="Prev" hotkey="k" onPress={() => act.page(-1)} />}
       </Box>
       {list.length === 0 && <Text dimColor>No items match.</Text>}
-      {shown.map(one => itemRow(ui, one, act, frame, 'row', idWidth, one.status === 'claimed' ? (one.claim ?? one.type) : one.type))}
+      {shown.map(one => itemRow(ui, one, act, frame, 'row', idWidth, one.status === 'claimed' ? (one.claim ?? one.type) : one.type, list.map(each => each.id)))}
     </Box>
   )
 }
@@ -421,15 +452,31 @@ function section(ui: Ui, title: string, rows: readonly Line[], prefix: string, f
 /** What the log would have drawn, said once, so a failed read never looks like an item with nothing on it. */
 function eventsFailed(ui: Ui, d: Detail): RenderElement {
   const { Box, Text } = ui
+  const moved = /moved while reading|moving/i.test(d.eventsError ?? '')
   return (
     <Box key="events-failed" flexDirection="column" marginTop={1}>
-      <Text color="error">could not read the events of {d.id}: {d.eventsError ?? ''}</Text>
-      <Text dimColor>The stop stamp, spec, decisions, records, reviews, tried, notes and links come from them and are not shown. Press r to read again.</Text>
+      <Text color="error">could not read the events of {d.id}: {moved ? 'the ledger moved while reading; press r' : (d.eventsError ?? '')}</Text>
+      <Text dimColor>The stop stamp, spec, decisions, records, reviews, tried, notes, links and timeline come from them and are not shown. Press r to read again.</Text>
     </Box>
   )
 }
 
-function askOptions(ui: Ui, askedEventId: number | null, d: Detail, fromCard: readonly AskOption[]): RenderElement | false {
+/** One line under its own key: a Text takes no key the engine or a test can address, a Box does. */
+function note(ui: Ui, key: string, content: string, style: { dimColor?: boolean; color?: string } = {}): RenderElement {
+  const { Box, Text } = ui
+  return (
+    <Box key={key}>
+      <Text {...style}>{content}</Text>
+    </Box>
+  )
+}
+
+/** One line in a section the events feed, when they could not be read: the section stays and says so. */
+function unread(ui: Ui, key: string): RenderElement {
+  return note(ui, key, 'not shown: the events could not be read (press r)', { dimColor: true })
+}
+
+function askOptions(ui: Ui, askedEventId: number | null, d: Detail, fromCard: readonly AskOption[], recommendation: string): RenderElement | false {
   const { Box, Text } = ui
   const options = optionsOf(d.events, askedEventId) ?? fromCard
   if (options.length === 0) return false
@@ -441,6 +488,7 @@ function askOptions(ui: Ui, askedEventId: number | null, d: Detail, fromCard: re
           {'    '}
           {String.fromCharCode(65 + (index % 26))}) {option.label}
           {option.description !== '' ? ` — ${option.description}` : ''}
+          {isRecommended(option, index, recommendation) ? '  ◀ recommended' : ''}
         </Text>
       ))}
     </Box>
@@ -452,15 +500,17 @@ function copyButton(ui: Ui, key: string, text: string, act: Act): RenderElement 
   return <Button key={key} label="Copy" onPress={() => act.copy(text)} />
 }
 
-function stopRows(ui: Ui, d: Detail, act: Act): RenderElement | false {
-  const { Box, Text } = ui
+function stopRows(ui: Ui, d: Detail, act: Act): RenderElement {
+  const { Box, Link, Text } = ui
   const stop = stopOf(d.events)
-  if (stop === null) return false
+  if (stop === null) {
+    return note(ui, 'stop-none', 'stop   none recorded', { dimColor: true })
+  }
   return (
     <Box key="stop" flexDirection="column">
       <Box gap={1}>
-        <Text bold>Stopped</Text>
-        {stop.phase !== '' && <Text dimColor>{stop.phase}</Text>}
+        <Text dimColor>stop  </Text>
+        {stop.phase !== '' && <Text dimColor>{stop.phase} ·</Text>}
         <Text>{stop.point}</Text>
         <Text dimColor>#{stop.eventId}</Text>
       </Box>
@@ -468,7 +518,7 @@ function stopRows(ui: Ui, d: Detail, act: Act): RenderElement | false {
       {stop.refs.map((ref, index) => (
         <Box key={`stop-ref-${index}`} gap={1}>
           <Text dimColor>  ref</Text>
-          <Text>{ref}</Text>
+          {/^https?:\/\/\S+$/.test(ref) ? <Link href={ref} label={ref} /> : <Text>{ref}</Text>}
           {copyButton(ui, `copy-ref-${index}`, ref, act)}
         </Box>
       ))}
@@ -476,56 +526,122 @@ function stopRows(ui: Ui, d: Detail, act: Act): RenderElement | false {
   )
 }
 
-/** Spec, elections, decision records, reviews, tried, notes and links: each a projection of the item's own events. */
-function eventSections(ui: Ui, d: Detail, act: Act): RenderElement {
-  const { Box, Link, Text } = ui
-  const spec = specOf(d.events)
-  const elections = electionsOf(d.events)
-  const records = recordsOf(d.events)
-  const reviews = reviewsOf(d.events)
-  const tried = triedOf(d.events)
-  const notes = notesOf(d.events)
-  const links = linksOf(d.events)
+/** A blocker is an item id the card names; when the pane holds that item it is a row that opens it. */
+function blockerRows(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, band: Band): RenderElement {
+  const { Box, Button, Text } = ui
+  if (d.blockers.length === 0) {
+    return note(ui, 'blockers-none', 'blockers none', { dimColor: true })
+  }
+  const known = new Map(view.items.map(one => [one.id, one]))
   return (
-    <Box key="event-sections" flexDirection="column">
-      {spec !== null && (
-        <Box key="spec" flexDirection="column">
-          {sectionHeader(ui, 'Spec', `${spec.version === null ? '' : `v${spec.version}`}${spec.size !== '' ? ` · size ${spec.size}` : ''}${spec.mergeClass !== '' ? ` · ${spec.mergeClass}` : ''} · #${spec.eventId}`)}
-          <Text bold>{spec.title}</Text>
-          {spec.body.split('\n').map((line, index) => (
-            <Text key={`spec-body-${index}`}>{line}</Text>
-          ))}
-          {spec.acceptance !== '' && <Text bold>Acceptance</Text>}
-          {spec.acceptance !== '' &&
-            spec.acceptance.split('\n').map((line, index) => (
-              <Text key={`spec-acceptance-${index}`}>{line}</Text>
-            ))}
-          {spec.source !== '' && <Text dimColor>source {spec.source}</Text>}
-        </Box>
-      )}
+    <Box key="blockers" flexDirection="column">
+      <Text dimColor>blockers {d.blockers.length}</Text>
+      {d.blockers.map((line, index) => {
+        const id = line.text.trim().split(/\s+/)[0] ?? ''
+        const one = known.get(id)
+        if (one === undefined) return <Text key={`blocker-${index}`}>{'  '}{cut(line.text, frame.width - 4)}</Text>
+        return (
+          <Button key={`blocker-${index}`} plain onPress={() => act.openItem(one.id)}>
+            {'  '}
+            <Text color={statusColor(one.status)}>{statusGlyph(one.status)}</Text> {one.id} {cut(one.title, Math.max(10, frame.width - one.id.length - (band === 'narrow' ? 8 : 10)))}
+          </Button>
+        )
+      })}
+    </Box>
+  )
+}
 
-      {elections.length > 0 && sectionHeader(ui, 'Decisions', String(elections.length))}
-      {elections.map(one => (
-        <Box key={`election-${one.eventId}`} flexDirection="column" marginBottom={1}>
+function nowSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, band: Band): RenderElement {
+  const { Box, Text } = ui
+  const lease = d.eventsError === null ? leaseWords(headerOf(d.events, d.status).leaseEnds, frame.now) : null
+  return (
+    <Box key="now" flexDirection="column">
+      {sectionHeader(ui, 'Now', '', `${SECTION_KEY_PREFIX}now`)}
+      {lease !== null && lease.ended && note(ui, 'lease-ended', 'lease ended; a takeover may claim it', { color: 'error' })}
+      <Box gap={1}>
+        <Text dimColor>next  </Text>
+        {d.nextStep !== '' ? <Text>{d.nextStep}</Text> : <Text dimColor>none recorded</Text>}
+      </Box>
+      {d.eventsError === null ? stopRows(ui, d, act) : unread(ui, 'stop-unread')}
+      {d.claim !== null && note(ui, 'claim', `claimed by ${d.claim}${lease === null ? '' : ` · ${lease.text}`}`, { color: lease !== null && lease.ended ? 'error' : 'warning' })}
+      {d.questions.length === 0 && note(ui, 'asks-none', 'asks   none open', { dimColor: true })}
+      {d.questions.length > 0 && <Text dimColor>asks {d.questions.length} open</Text>}
+      {d.questions.map((q, index) => (
+        <Box key={`q-${index}`} flexDirection="column" marginBottom={1}>
           <Box gap={1}>
-            <Text color="claude">●</Text>
-            <Text>{one.question === '' ? one.chosen : `${one.question} → ${one.chosen}`}</Text>
-            <Text dimColor>{dayOf(one.recordedAt)}</Text>
-            <Text dimColor>#{one.eventId}</Text>
+            <Text color="claude">?</Text>
+            <Text>{q.question}</Text>
           </Box>
-          {one.chosenDescription !== '' && <Text dimColor>  {one.chosenDescription}</Text>}
-          {one.rejected.length > 0 && <Text dimColor>  rejected: {one.rejected.join(' | ')}</Text>}
-          {one.scope !== '' && <Text dimColor>  scope: {one.scope}</Text>}
-          {(one.quoteRef !== null || one.quotes.length > 0) && (
-            <Text dimColor>
-              {'  '}on these words:{one.quoteRef === null ? '' : ` #${one.quoteRef}`}
-              {one.quotes.length > 0 ? ` ${one.quotes.map(quote => `"${quote}"`).join(' ')}` : ''}
-            </Text>
-          )}
+          {q.added !== '' && <Text dimColor>  asked {q.added}</Text>}
+          {q.ask !== '' && q.ask !== q.question && <Text dimColor>  {q.ask}</Text>}
+          {askOptions(ui, q.askedEventId, d, q.options, q.recommendation)}
+          {q.recommendation !== '' && <Text dimColor>  recommendation: {q.recommendation}</Text>}
+          {q.fallback !== '' && <Text dimColor>  default: {q.fallback}</Text>}
+          {q.unblocks !== '' && <Text dimColor>  unblocks: {q.unblocks}</Text>}
+          {q.effort !== '' && <Text dimColor>  effort: {q.effort}</Text>}
+          {q.askedEventId !== null && <Text dimColor>  #{q.askedEventId}</Text>}
+        </Box>
+      ))}
+      {blockerRows(ui, view, d, act, frame, band)}
+      {section(ui, 'Duplicated by', d.duplicatedBy, 'duplicate', frame)}
+      {section(ui, 'Progress', d.progress, 'progress', frame)}
+    </Box>
+  )
+}
+
+function decisionsSection(ui: Ui, d: Detail): RenderElement {
+  const { Box, Text } = ui
+  if (d.eventsError !== null) {
+    return (
+      <Box key="decisions" flexDirection="column">
+        {sectionHeader(ui, 'Decisions', '?', `${SECTION_KEY_PREFIX}decisions`)}
+        {unread(ui, 'decisions-unread')}
+      </Box>
+    )
+  }
+  const elections = [...electionsOf(d.events)].reverse()
+  const answered = answeredAsksOf(d.events)
+  const records = [...recordsOf(d.events)].reverse()
+  const here = new Set(d.events.map(one => one.id))
+  return (
+    <Box key="decisions" flexDirection="column">
+      {sectionHeader(ui, 'Decisions', elections.length + records.length === 0 ? '–' : String(elections.length + records.length), `${SECTION_KEY_PREFIX}decisions`)}
+      {elections.length + records.length + answered.length === 0 && note(ui, 'decisions-none', 'no decisions on this item', { dimColor: true })}
+      {elections.map(one => {
+        const grant = grantOf(d.events, one.eventId)
+        return (
+          <Box key={`election-${one.eventId}`} flexDirection="column" marginBottom={1}>
+            <Box gap={1}>
+              <Text color="claude">●</Text>
+              <Text>{one.question === '' ? one.chosen : `${one.question} → ${one.chosen}`}</Text>
+              <Text dimColor>{dayOf(one.recordedAt)}</Text>
+              {grant !== '' && <Text dimColor>{grant}</Text>}
+              <Text dimColor>#{one.eventId}</Text>
+            </Box>
+            {one.chosenDescription !== '' && <Text dimColor>  {one.chosenDescription}</Text>}
+            {one.rejected.length > 0 && <Text dimColor>  rejected: {one.rejected.join(' | ')}</Text>}
+            {one.scope !== '' && <Text dimColor>  scope: {one.scope}</Text>}
+            {(one.quoteRef !== null || one.quotes.length > 0) && (
+              <Text dimColor>
+                {'  '}on these words:
+                {one.quoteRef === null ? '' : ` #${one.quoteRef}${here.has(one.quoteRef) ? '' : ' (not on this item; needs events --id, LP6-5)'}`}
+                {one.quotes.length > 0 ? ` ${one.quotes.map(quote => `"${quote}"`).join(' ')}` : ''}
+              </Text>
+            )}
+          </Box>
+        )
+      })}
+
+      {answered.length > 0 && <Text dimColor>asks answered {answered.length}</Text>}
+      {answered.map(one => (
+        <Box key={`answered-${one.askedEventId}`} gap={1}>
+          <Text dimColor>·</Text>
+          <Text dimColor>{one.question} → {one.chosen}</Text>
+          <Text dimColor>#{one.askedEventId} · #{one.electionId}</Text>
         </Box>
       ))}
 
-      {records.length > 0 && sectionHeader(ui, 'Decision records', String(records.length))}
+      {records.length > 0 && <Text dimColor>decision records {records.length}</Text>}
       {records.map(one => (
         <Box key={`record-${one.eventId}`} flexDirection="column" marginBottom={1}>
           <Box gap={1}>
@@ -545,7 +661,233 @@ function eventSections(ui: Ui, d: Detail, act: Act): RenderElement {
           {one.result !== '' && <Text dimColor>  result: {one.result}{one.resultEvidence !== '' ? ` (${one.resultEvidence})` : ''}</Text>}
         </Box>
       ))}
+      {note(ui, 'tagged-here', 'records tagged here from other items need ledger links (LP6-3)', { dimColor: true })}
+    </Box>
+  )
+}
 
+function linksSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, band: Band): RenderElement {
+  const { Box, Button, Link, Text } = ui
+  if (d.eventsError !== null) {
+    return (
+      <Box key="links" flexDirection="column">
+        {sectionHeader(ui, 'Links', '?', `${SECTION_KEY_PREFIX}links`)}
+        {unread(ui, 'links-unread')}
+      </Box>
+    )
+  }
+  const links = groupLinks(linksOf(d.events))
+  const known = new Map(view.items.map(one => [one.id, one]))
+  return (
+    <Box key="links" flexDirection="column">
+      {sectionHeader(ui, 'Links', links.length === 0 ? '–' : String(links.length), `${SECTION_KEY_PREFIX}links`)}
+      {links.length === 0 && note(ui, 'links-none', `no links; link with: ledger link ${d.id} --rel pr --target <url>`, { dimColor: true })}
+      {links.length > 0 && <Text dimColor>out</Text>}
+      {links.map(one => {
+        const target = one.rel === 'pr' ? prShort(one.target) : one.target
+        const other = known.get(one.target)
+        return (
+          <Box key={`link-${one.eventId}-${one.rel}`} gap={1}>
+            <Text dimColor>{fit(one.rel, 10)}</Text>
+            {other !== undefined ? (
+              <Button key={`link-item-${one.eventId}`} plain onPress={() => act.openItem(other.id)}>
+                <Text color={statusColor(other.status)}>{statusGlyph(other.status)}</Text> {other.id}{' '}
+                {band === 'wide' ? other.title : cut(other.title, Math.max(10, frame.width - other.id.length - 20))}
+              </Button>
+            ) : one.href !== null ? (
+              <Link href={one.href} label={target} />
+            ) : (
+              <Text>{target}</Text>
+            )}
+            {one.copyText !== null && copyButton(ui, `copy-link-${one.eventId}`, one.copyText, act)}
+            <Text dimColor>#{one.eventId}</Text>
+          </Box>
+        )
+      })}
+      {note(ui, 'links-in', 'in: related items need ledger links (LP6-3)', { dimColor: true })}
+      {note(ui, 'links-docs', 'documents: documents land with LC5', { dimColor: true })}
+    </Box>
+  )
+}
+
+function provenance(ui: Ui, event: Event): RenderElement {
+  const { Box, Text } = ui
+  return (
+    <Box key={`provenance-${event.id}`} flexDirection="column">
+      <Text dimColor>#{event.id} {event.kind}</Text>
+      <Text dimColor>  actor {event.actor ?? '—'} · harness {event.harness ?? '—'} · model {event.model ?? '—'}</Text>
+      <Text dimColor>  session {event.session ?? '—'}</Text>
+      <Text dimColor>  time {stampOf(event.recordedAt)}</Text>
+      <Text dimColor>  key {event.idempotencyKey === '' ? '—' : event.idempotencyKey}</Text>
+      <Text dimColor>  hash {event.hash === '' ? '—' : event.hash}</Text>
+    </Box>
+  )
+}
+
+function timelineRow(ui: Ui, row: TimelineRow, open: boolean, act: Act, frame: Frame, band: Band): RenderElement {
+  const { Box, Button, Code, Text } = ui
+  const id = `#${row.id}`.padStart(7)
+  const time = clockOf(row.at, band === 'wide')
+  const elapsed = row.elapsed === null ? '' : ` · ${row.elapsed}`
+  const color = kindColor(row.kind, row.summary)
+  const modelWidth = band === 'wide' ? 15 : 0
+  const fixed = 7 + 1 + time.length + 1 + 18 + 1 + 20 + 1 + modelWidth
+  const summaryWidth = Math.max(16, frame.width - fixed - elapsed.length - 1)
+  const wide = band === 'wide'
+  return (
+    <Box key={`event-${row.id}`} flexDirection="column">
+      {band === 'narrow' ? (
+        <Box flexDirection="column">
+          <Button key={`event-row-${row.id}`} plain onPress={() => act.toggleEvent(row.id)}>
+            <Text dimColor>{id}</Text> <Text dimColor>{time}</Text> <Text color={color}>{cut(row.kind, 18)}</Text> <Text dimColor>{cut(row.actor === '' ? '—' : row.actor, Math.max(6, frame.width - 36))}</Text>
+          </Button>
+          <Text>{'  '}{cut(row.summary + elapsed, Math.max(10, frame.width - 3))}</Text>
+        </Box>
+      ) : (
+        <Button key={`event-row-${row.id}`} plain onPress={() => act.toggleEvent(row.id)}>
+          <Text dimColor>{id}</Text> <Text dimColor>{time}</Text> <Text color={color}>{fit(row.kind, 18)}</Text> <Text dimColor>{fit(row.actor === '' ? '—' : row.actor, 20)}</Text>
+          {wide ? <Text dimColor> {fit(row.model === '' ? '—' : row.model, 14)}</Text> : ''} <Text>{cut(row.summary, summaryWidth)}</Text>
+          {row.elapsed !== null && <Text dimColor>{elapsed}</Text>}
+        </Button>
+      )}
+      {open && (
+        <Box key={`event-detail-${row.id}`} flexDirection={wide ? 'row' : 'column'} gap={wide ? 2 : 0} paddingLeft={2} paddingBottom={1}>
+          <Box flexDirection="column">
+            {row.events.map(event => (
+              <Code key={`payload-${event.id}`} source={JSON.stringify(event.payload, null, 2)} language="json" />
+            ))}
+          </Box>
+          <Box flexDirection="column">{row.events.map(event => provenance(ui, event))}</Box>
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+function timelineSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, band: Band, leading: number): RenderElement {
+  const { Box, Button, Select, Text } = ui
+  const heading = `${d.eventsOnItem} ${d.eventsOnItem === 1 ? 'event' : 'events'}${d.eventsDecayed > 0 ? `, ${d.eventsDecayed} ephemeral decayed` : ''}`
+  if (d.eventsError !== null) {
+    return (
+      <Box key="timeline" flexDirection="column">
+        {sectionHeader(ui, 'Timeline', '?', `${SECTION_KEY_PREFIX}timeline`)}
+        {unread(ui, 'timeline-unread')}
+      </Box>
+    )
+  }
+  const order = view.timelineOrder
+  const filter = (TIMELINE_FILTERS as readonly string[]).includes(view.timelineKind) ? view.timelineKind : 'all'
+  const rows = timelineOf(d.events, filter, order)
+  const range = windowOf(rows.length, frame.offset, frame.rows, leading, Math.max(10, frame.rows))
+  const open = new Set(view.openEvents)
+  const groups = dayGroups(rows)
+  let index = 0
+  return (
+    <Box key="timeline" flexDirection="column">
+      {sectionHeader(ui, 'Timeline', `${heading} · ${order === 'newest' ? 'newest first' : 'oldest first'}`, `${SECTION_KEY_PREFIX}timeline`)}
+      <Box gap={2} flexWrap="wrap">
+        <Select key="timeline-kind" label="Show" options={TIMELINE_FILTERS.map(kind => ({ label: kind, value: kind }))} value={filter} onSelect={value => act.setTimelineKind(value)} />
+        <Button key="timeline-order" label={order === 'newest' ? 'Oldest first' : 'Newest first'} onPress={() => act.setTimelineOrder(order === 'newest' ? 'oldest' : 'newest')} />
+      </Box>
+      {rows.length === 0 && note(ui, 'timeline-none', filter === 'all' ? 'no events on this item' : `no ${filter} events on this item`, { dimColor: true })}
+      {groups.map(group => (
+        <Box key={`day-${group.day}-${group.rows[0]?.id ?? 0}`} flexDirection="column">
+          <Text bold>
+            {group.day} <Text dimColor>· {group.events} {group.events === 1 ? 'event' : 'events'}</Text>
+          </Text>
+          {group.rows.map(row => {
+            const at = index
+            index += 1
+            if ((at < range.from || at >= range.to) && !open.has(row.id)) {
+              return note(ui, `event-${row.id}`, `${`#${row.id}`.padStart(7)} ${cut(row.kind, 18)}`, { dimColor: true })
+            }
+            return timelineRow(ui, row, open.has(row.id), act, frame, band)
+          })}
+        </Box>
+      ))}
+      {rows.length > WINDOW_AFTER && note(ui, 'timeline-window', `${rows.length} rows; those near the window are drawn in full`, { dimColor: true })}
+      {d.footer !== '' && (
+        <Box marginTop={1}>
+          <Text dimColor>{d.footer}</Text>
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+function specSection(ui: Ui, d: Detail): RenderElement {
+  const { Box, Text } = ui
+  if (d.eventsError !== null) {
+    return (
+      <Box key="spec-section" flexDirection="column">
+        {sectionHeader(ui, 'Spec', '?', `${SECTION_KEY_PREFIX}spec`)}
+        {unread(ui, 'spec-unread')}
+      </Box>
+    )
+  }
+  const spec = specOf(d.events)
+  const versions = d.events.filter(one => one.kind === 'item.spec').length
+  if (spec === null) {
+    return (
+      <Box key="spec-section" flexDirection="column">
+        {sectionHeader(ui, 'Spec', '–', `${SECTION_KEY_PREFIX}spec`)}
+        {note(ui, 'spec-none', 'no spec recorded', { dimColor: true })}
+      </Box>
+    )
+  }
+  return (
+    <Box key="spec-section" flexDirection="column">
+      {sectionHeader(
+        ui,
+        'Spec',
+        `${spec.version === null ? '' : `v${spec.version}`}${versions > 1 ? ` of ${versions}` : ''}${spec.size !== '' ? ` · size ${spec.size}` : ''}${spec.mergeClass !== '' ? ` · ${spec.mergeClass}` : ''} · #${spec.eventId}`,
+        `${SECTION_KEY_PREFIX}spec`,
+      )}
+      <Box key="spec" flexDirection="column">
+        <Text bold>{spec.title}</Text>
+        {spec.body.split('\n').map((line, index) => (
+          <Text key={`spec-body-${index}`}>{line}</Text>
+        ))}
+        {spec.acceptance !== '' && <Text bold>Acceptance</Text>}
+        {spec.acceptance !== '' &&
+          spec.acceptance.split('\n').map((line, index) => (
+            <Text key={`spec-acceptance-${index}`}>{line}</Text>
+          ))}
+        {spec.source !== '' && <Text dimColor>source {spec.source}</Text>}
+      </Box>
+    </Box>
+  )
+}
+
+function ticketSection(ui: Ui, d: Detail): RenderElement | false {
+  const { Box, Text } = ui
+  if (d.eventsError !== null) return false
+  const notes = ticketOf(d.events)
+  if (notes.length === 0) return false
+  return (
+    <Box key="ticket" flexDirection="column">
+      {sectionHeader(ui, 'Ticket', String(notes.length), `${SECTION_KEY_PREFIX}ticket`)}
+      {notes.map(one => (
+        <Box key={`ticket-${one.eventId}`} gap={1}>
+          <Text dimColor>{fit(one.type, 8)}</Text>
+          <Text color={one.readable ? undefined : 'warning'}>{one.text}</Text>
+          <Text dimColor>#{one.eventId}</Text>
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
+/** Reviews, tried and plain notes, as the item screen drew them before the timeline; the timeline's rows carry one line each. */
+function recordSections(ui: Ui, d: Detail): RenderElement | false {
+  const { Box, Link, Text } = ui
+  if (d.eventsError !== null) return false
+  const reviews = reviewsOf(d.events)
+  const tried = triedOf(d.events)
+  const notes = notesOf(d.events)
+  if (reviews.length + tried.length + notes.length === 0) return false
+  return (
+    <Box key="event-sections" flexDirection="column">
       {reviews.length > 0 && sectionHeader(ui, 'Reviews', String(reviews.length))}
       {reviews.map(one => (
         <Box key={`review-${one.eventId}`} flexDirection="column">
@@ -591,96 +933,109 @@ function eventSections(ui: Ui, d: Detail, act: Act): RenderElement {
           <Text dimColor>#{one.eventId}</Text>
         </Box>
       ))}
+    </Box>
+  )
+}
 
-      {links.length > 0 && sectionHeader(ui, 'Links', String(links.length))}
-      {links.map(one => (
-        <Box key={`link-${one.eventId}-${one.rel}`} gap={1}>
-          <Text dimColor>{fit(one.rel, 10)}</Text>
-          {one.href !== null ? <Link href={one.href} label={one.target} /> : <Text>{one.target}</Text>}
-          {one.copyText !== null && copyButton(ui, `copy-link-${one.eventId}`, one.copyText, act)}
-          <Text dimColor>#{one.eventId}</Text>
-        </Box>
+/** The strip under the tab row: one Button per section the item has, with its hotkey and count. */
+function strip(ui: Ui, d: Detail, act: Act): RenderElement {
+  const { Box, Button } = ui
+  return (
+    <Box key="strip" gap={1} flexWrap="wrap">
+      {stripOf(d.eventsError === null ? d.events : null).map(entry => (
+        <Button
+          key={`strip-${entry.section}`}
+          label={entry.count === '' ? entry.label : `${entry.label} ${entry.count}`}
+          hotkey={entry.hotkey}
+          onPress={() => act.jump(`${SECTION_KEY_PREFIX}${entry.section}`)}
+        />
       ))}
     </Box>
   )
+}
+
+function itemHeader(ui: Ui, d: Detail, band: Band): RenderElement {
+  const { Box, Text } = ui
+  const fields = [
+    <Text key="id" bold>
+      {d.id}
+    </Text>,
+    <Text key="status" color={statusColor(d.status)}>
+      {statusGlyph(d.status)} {d.status}
+    </Text>,
+    <Text key="type" dimColor>
+      {d.type}
+    </Text>,
+    d.owner !== null ? (
+      <Text key="owner" dimColor>
+        owner {d.owner}
+      </Text>
+    ) : null,
+    d.revision !== null ? (
+      <Text key="revision" dimColor>
+        revision {d.revision.id}
+      </Text>
+    ) : null,
+  ]
+  return band === 'narrow' ? (
+    <Box key="header" flexDirection="column" marginTop={1}>
+      {fields}
+    </Box>
+  ) : (
+    <Box key="header" gap={1} marginTop={1} flexWrap="wrap">
+      {fields}
+    </Box>
+  )
+}
+
+/** Opens the detail drawn dim, with the age of the read it shows, when the ledger refused the latest one. */
+function dimmed(ui: Ui): Ui {
+  return { ...ui, Text: props => ui.Text({ ...props, dimColor: true }) }
 }
 
 function item(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
   const { Box, Button, Text } = ui
   const d: Detail | null = view.item
   const id = view.itemId ?? ''
-  const summaryWidth = Math.max(16, frame.width - (6 + 1 + 6 + 1 + 18 + 1 + 20 + 1))
-  const shownEvents = 40
+  const band = bandOf(frame.width)
+  const stale = view.itemError !== null && d !== null
+  const body = stale ? dimmed(ui) : ui
+  const nav: Nav = { screen: view.screen, itemId: view.itemId, history: view.history, siblings: view.siblings }
+  const prev = navStep(nav, -1)
+  const next = navStep(nav, 1)
+  const links = d !== null && d.eventsError === null ? linksOf(d.events) : []
+  const open = firstOpenable(links)
+  let leading = 0
+  if (d !== null) {
+    leading = 14 + 6 * d.questions.length + d.blockers.length + (d.eventsError === null ? electionsOf(d.events).length * 4 + recordsOf(d.events).length * 5 + links.length + 6 : 0)
+  }
   return (
     <Box flexDirection="column">
-      <Box gap={1} marginTop={1}>
+      <Box gap={1} marginTop={1} flexWrap="wrap">
         <Button key="back" label="Back" hotkey="x" onPress={() => act.back()} />
         <Button key="copy" label="Copy id" hotkey="c" onPress={() => act.copy(id)} />
+        {prev !== null && <Button key="prev-item" label="Prev" hotkey="a" onPress={() => act.step(-1)} />}
+        {next !== null && <Button key="next-item" label="Next" hotkey="f" onPress={() => act.step(1)} />}
+        {view.history.length > 0 && <Button key="history" label="Last item" hotkey="b" onPress={() => act.historyBack()} />}
+        {open !== null && <Button key="open-link" label={`Copy ${open.label}`} hotkey="o" onPress={() => act.copy(open.text)} />}
         {view.itemLoading && <Text dimColor>reading {id}…</Text>}
       </Box>
       {view.itemError !== null && <Text color="error">{view.itemError}</Text>}
+      {stale && view.itemReadAt !== null && note(ui, 'stale', `showing the read from ${ageOf(view.itemReadAt, frame.now)} ago`, { dimColor: true })}
+      {d !== null && strip(ui, d, act)}
       {d !== null && (
         <Box flexDirection="column">
-          <Box gap={1} marginTop={1} flexWrap="wrap">
-            <Text bold>{d.id}</Text>
-            <Text color={statusColor(d.status)}>{statusGlyph(d.status)} {d.status}</Text>
-            <Text dimColor>{d.type}</Text>
-            {d.claim !== null && <Text color="warning">claimed by {d.claim}</Text>}
-            {d.owner !== null && <Text dimColor>owner {d.owner}</Text>}
-            {d.revision !== null && <Text dimColor>revision {d.revision.id}</Text>}
-          </Box>
-          <Text>{d.title}</Text>
-          {d.eventsError === null && headerLine(headerOf(d.events, d.status)) !== '' && <Text dimColor>{headerLine(headerOf(d.events, d.status))}</Text>}
-          {d.nextStep !== '' && (
-            <Box gap={1}>
-              <Text bold>Next</Text>
-              <Text>{d.nextStep}</Text>
-            </Box>
-          )}
-          {d.eventsError === null && stopRows(ui, d, act)}
-
-          {d.questions.length > 0 && sectionHeader(ui, 'Open questions', String(d.questions.length))}
-          {d.questions.map((q, index) => (
-            <Box key={`q-${index}`} flexDirection="column" marginBottom={1}>
-              <Box gap={1}>
-                <Text color="claude">?</Text>
-                <Text>{q.question}</Text>
-              </Box>
-              {q.added !== '' && <Text dimColor>  asked {q.added}</Text>}
-              {q.ask !== '' && q.ask !== q.question && <Text dimColor>  {q.ask}</Text>}
-              {askOptions(ui, q.askedEventId, d, q.options)}
-              {q.recommendation !== '' && <Text dimColor>  recommendation: {q.recommendation}</Text>}
-              {q.fallback !== '' && <Text dimColor>  default: {q.fallback}</Text>}
-              {q.unblocks !== '' && <Text dimColor>  unblocks: {q.unblocks}</Text>}
-              {q.effort !== '' && <Text dimColor>  effort: {q.effort}</Text>}
-            </Box>
-          ))}
-
-          {section(ui, 'Blockers', d.blockers, 'blocker', frame)}
-          {section(ui, 'Duplicated by', d.duplicatedBy, 'duplicate', frame)}
-          {section(ui, 'Progress', d.progress, 'progress', frame)}
-          {d.eventsError !== null ? eventsFailed(ui, d) : eventSections(ui, d, act)}
-
-          {sectionHeader(
-            ui,
-            'Log',
-            `${d.eventsOnItem} ${d.eventsOnItem === 1 ? 'event' : 'events'}${d.eventsDecayed > 0 ? `, ${d.eventsDecayed} ephemeral decayed` : ''} · newest first`,
-          )}
-          {d.events.slice(0, shownEvents).map(event => (
-            <Box key={`event-${event.id}`} gap={1}>
-              <Text dimColor>{String(event.id).padStart(6)}</Text>
-              <Text dimColor>{fit(dayOf(event.recordedAt), 6)}</Text>
-              <Text color={kindColor(event.kind, event.summary)}>{fit(event.kind, 18)}</Text>
-              <Text dimColor>{fit(stamp(event), 20)}</Text>
-              <Text>{cut(event.summary, summaryWidth)}</Text>
-            </Box>
-          ))}
-          {d.events.length > shownEvents && <Text dimColor>and {d.events.length - shownEvents} earlier events</Text>}
-          {d.footer !== '' && (
-            <Box marginTop={1}>
-              <Text dimColor>{d.footer}</Text>
-            </Box>
-          )}
+          {itemHeader(body, d, band)}
+          <body.Text>{d.title}</body.Text>
+          {d.eventsError === null && headerLine(headerOf(d.events, d.status)) !== '' && <body.Text dimColor>{headerLine(headerOf(d.events, d.status))}</body.Text>}
+          {nowSection(body, view, d, act, frame, band)}
+          {d.eventsError !== null && eventsFailed(body, d)}
+          {decisionsSection(body, d)}
+          {linksSection(body, view, d, act, frame, band)}
+          {timelineSection(body, view, d, act, frame, band, leading)}
+          {specSection(body, d)}
+          {ticketSection(body, d)}
+          {recordSections(body, d)}
         </Box>
       )}
     </Box>
@@ -716,12 +1071,12 @@ function decisions(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
         {pages > 1 && <Button key="prev" label="Prev" hotkey="k" onPress={() => act.page(-1)} />}
       </Box>
       {list.length === 0 && <Text dimColor>No decision records yet.</Text>}
-      {shown.map(one => decisionRow(ui, one, view, act, frame, idWidth, effectWidth, narrow))}
+      {shown.map(one => decisionRow(ui, one, view, act, frame, idWidth, effectWidth, narrow, list.map(each => each.itemId)))}
     </Box>
   )
 }
 
-function decisionRow(ui: Ui, one: Decision, view: View, act: Act, frame: Frame, idWidth: number, effectWidth: number, narrow: boolean): RenderElement {
+function decisionRow(ui: Ui, one: Decision, view: View, act: Act, frame: Frame, idWidth: number, effectWidth: number, narrow: boolean, siblings: readonly string[]): RenderElement {
   const { Box, Button, Text } = ui
   const isOpen = view.expanded === one.eventId
   const tags = one.tags.map(tag => `${tag.type}:${tag.id}`).join(' ')
@@ -749,7 +1104,7 @@ function decisionRow(ui: Ui, one: Decision, view: View, act: Act, frame: Frame, 
           {one.result !== null && <Text dimColor>result: {one.result}</Text>}
           {one.evidence !== null && <Text dimColor>evidence: {one.evidence}</Text>}
           <Box>
-            <Button key={`decision-open-${one.eventId}`} label={`Open ${one.itemId}`} onPress={() => act.openItem(one.itemId)} />
+            <Button key={`decision-open-${one.eventId}`} label={`Open ${one.itemId}`} onPress={() => act.openItem(one.itemId, siblings)} />
           </Box>
         </Box>
       )}
@@ -762,6 +1117,7 @@ function search(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
   const hits = view.hits
   const idWidth = idWidthOf(hits.map(hit => hit.itemId ?? ''))
   const titleWidth = Math.max(16, frame.width - (9 + 1 + 6 + 1 + idWidth + 1) - 1)
+  const hitIds = hits.flatMap(hit => (hit.itemId === null ? [] : [hit.itemId]))
   return (
     <Box flexDirection="column">
       <Box marginTop={1}>
@@ -782,7 +1138,7 @@ function search(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
       {hits.map(hit => (
         <Box key={`hit-${hit.id}`} flexDirection="column">
           {hit.itemId !== null ? (
-            <Button key={`hit-open-${hit.id}`} plain onPress={() => act.openItem(hit.itemId ?? '')}>
+            <Button key={`hit-open-${hit.id}`} plain onPress={() => act.openItem(hit.itemId ?? '', hitIds)}>
               <Text dimColor>{fit(hit.docType, 9)}</Text> <Text dimColor>{fit(dayOf(hit.date), 6)}</Text> {fit(hit.itemId, idWidth)} {cut(hit.title, titleWidth)}
             </Button>
           ) : (
