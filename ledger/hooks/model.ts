@@ -1,4 +1,4 @@
-import type { Decision, Doctor, Item, Screen, Status } from '../types'
+import type { AskOption, Decision, DecisionRecord, Doctor, Election, Event, Item, ItemHeader, LinkRow, Note, Review, Screen, Spec, Status, Stop, Tried } from '../types'
 
 export const STATUSES: readonly Status[] = ['open', 'claimed', 'blocked', 'closed']
 export const SCREENS: readonly Screen[] = ['home', 'needs', 'items', 'item', 'decisions', 'search']
@@ -316,4 +316,244 @@ export function parseCommandArgs(args: string): Asked {
     if (ID.test(words[0]!)) return { id: words[0]! }
   }
   return { query: words.join(' ') }
+}
+
+/*
+ * The item screen's sections, projected from the item's own events (`export-item`).
+ * Each is a pure function of the event list: no bound on the resume card can hide a row.
+ * An event whose payload lacks the field a row is built on keeps its row, drawn with
+ * the event's one-line summary in that field's place; nothing here throws.
+ */
+
+type Payload = Record<string, unknown>
+
+function text(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function whole(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) ? value : null
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one !== '') : []
+}
+
+function oldestFirstEvents(events: readonly Event[]): Event[] {
+  return [...events].sort((a, b) => a.id - b.id)
+}
+
+function payloadOf(event: Event): Payload {
+  return typeof event.payload === 'object' && event.payload !== null && !Array.isArray(event.payload) ? event.payload : {}
+}
+
+/** The field when present, else the event's own one-line summary, so a malformed event still draws. */
+function orSummary(value: string, event: Event): string {
+  return value !== '' ? value : event.summary
+}
+
+function httpHref(target: string): string | null {
+  const match = /^https?:\/\/\S+$/.exec(target.trim())
+  return match === null ? null : match[0]
+}
+
+/** Where the item came from and when, and how long a claim runs. */
+export function headerOf(events: readonly Event[], status: string): ItemHeader {
+  const ordered = oldestFirstEvents(events)
+  const created = ordered.find(one => one.kind === 'item.created')
+  let leaseEnds: string | null = null
+  if (status === 'claimed') {
+    const states = ordered.filter(one => one.kind === 'item.state')
+    const latest = states[states.length - 1]
+    if (latest !== undefined) {
+      const p = payloadOf(latest)
+      if (text(p.status) === 'claimed' && text(p.expires_at) !== '') leaseEnds = text(p.expires_at)
+    }
+  }
+  const source = created === undefined ? '' : text(payloadOf(created).source)
+  return { source: source === '' ? null : source, createdAt: created === undefined ? null : created.recordedAt, leaseEnds }
+}
+
+/** Every `item.linked` event, plus the PR a loop build produced, once per relation and target. */
+export function linksOf(events: readonly Event[]): LinkRow[] {
+  const rows: LinkRow[] = []
+  const seen = new Set<string>()
+  for (const event of oldestFirstEvents(events)) {
+    const p = payloadOf(event)
+    let rel = ''
+    let target = ''
+    if (event.kind === 'item.linked') {
+      rel = text(p.rel)
+      target = text(p.target)
+      if (target === '') {
+        rows.push({ eventId: event.id, rel: rel === '' ? '?' : rel, target: event.summary, href: null, copyText: null })
+        continue
+      }
+    } else if (event.kind === 'loop.done' && text(p.operation) === 'build' && text(p.target) !== '') {
+      rel = 'pr'
+      target = text(p.target)
+    } else {
+      continue
+    }
+    const key = `${rel}\n${target}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    rows.push({ eventId: event.id, rel: rel === '' ? '?' : rel, target, href: httpHref(target), copyText: rel === 'url' ? target : null })
+  }
+  return rows
+}
+
+/** Every `decision.elected` event: the chosen option, the rejected ones, the scope and the quote reference. */
+export function electionsOf(events: readonly Event[]): Election[] {
+  return oldestFirstEvents(events)
+    .filter(one => one.kind === 'decision.elected')
+    .map(event => {
+      const p = payloadOf(event)
+      return {
+        eventId: event.id,
+        recordedAt: event.recordedAt,
+        question: text(p.question),
+        chosen: orSummary(text(p.chosen), event),
+        chosenDescription: text(p.chosen_description),
+        rejected: strings(p.rejected),
+        scope: text(p.scope),
+        quoteRef: whole(p.quote_ref),
+        quotes: strings(p.quotes),
+        askedEventId: whole(p.asked_event_id),
+      }
+    })
+}
+
+/** Every `decision.recorded` event with its latest standing and result applied. */
+export function recordsOf(events: readonly Event[]): DecisionRecord[] {
+  const ordered = oldestFirstEvents(events)
+  const standing = new Map<number, { standing: string; supersededBy: number | null }>()
+  const result = new Map<number, { result: string; evidence: string }>()
+  for (const event of ordered) {
+    const p = payloadOf(event)
+    const target = whole(p.decision_event_id)
+    if (target === null) continue
+    if (event.kind === 'decision.standing' && text(p.standing) !== '') standing.set(target, { standing: text(p.standing), supersededBy: whole(p.superseded_by) })
+    if (event.kind === 'decision.result' && text(p.result) !== '') result.set(target, { result: text(p.result), evidence: text(p.evidence) })
+  }
+  return ordered
+    .filter(one => one.kind === 'decision.recorded')
+    .map(event => {
+      const p = payloadOf(event)
+      const later = standing.get(event.id)
+      const came = result.get(event.id)
+      return {
+        eventId: event.id,
+        recordedAt: event.recordedAt,
+        who: text(p.who),
+        whoKind: text(p.who_kind),
+        relayedBy: text(p.relayed_by),
+        standing: later?.standing ?? text(p.standing),
+        supersededBy: later?.supersededBy ?? null,
+        effect: orSummary(text(p.effect), event),
+        tags: (Array.isArray(p.tags) ? p.tags : []).map(tag => {
+          const t = typeof tag === 'object' && tag !== null ? (tag as Payload) : {}
+          return `${text(t.type)}:${text(t.id)}`
+        }),
+        verbatim: text(p.verbatim),
+        phase: text(p.phase),
+        evidence: text(p.evidence),
+        result: came?.result ?? '',
+        resultEvidence: came?.evidence ?? '',
+      }
+    })
+}
+
+/** The latest `item.stopped` stamp: where work stopped, the skills to invoke next, the refs to read. */
+export function stopOf(events: readonly Event[]): Stop | null {
+  const stops = oldestFirstEvents(events).filter(one => one.kind === 'item.stopped')
+  const event = stops[stops.length - 1]
+  if (event === undefined) return null
+  const p = payloadOf(event)
+  return { eventId: event.id, recordedAt: event.recordedAt, point: orSummary(text(p.point), event), phase: text(p.phase), skills: strings(p.skills), refs: strings(p.refs) }
+}
+
+/** Every `item.tried` event with its outcome and evidence. */
+export function triedOf(events: readonly Event[]): Tried[] {
+  return oldestFirstEvents(events)
+    .filter(one => one.kind === 'item.tried')
+    .map(event => {
+      const p = payloadOf(event)
+      return { eventId: event.id, what: orSummary(text(p.what), event), outcome: text(p.outcome), phase: text(p.phase), evidence: text(p.evidence) }
+    })
+}
+
+/** Every recorded review, and every review step the work loop completed (its head, verdict and PR). */
+export function reviewsOf(events: readonly Event[]): Review[] {
+  const rows: Review[] = []
+  for (const event of oldestFirstEvents(events)) {
+    const p = payloadOf(event)
+    if (event.kind === 'review.recorded') {
+      rows.push({
+        eventId: event.id,
+        round: whole(p.round),
+        verdict: orSummary(text(p.verdict), event),
+        head: '',
+        pr: '',
+        reviewer: text(p.reviewer),
+        evidence: text(p.evidence),
+        findings: strings(p.findings),
+      })
+    } else if (event.kind === 'loop.done' && text(p.operation) === 'review') {
+      rows.push({ eventId: event.id, round: null, verdict: orSummary(text(p.verdict), event), head: text(p.head), pr: text(p.target), reviewer: '', evidence: '', findings: [] })
+    }
+  }
+  return rows
+}
+
+/** Every `item.note`. */
+export function notesOf(events: readonly Event[]): Note[] {
+  return oldestFirstEvents(events)
+    .filter(one => one.kind === 'item.note')
+    .map(event => {
+      const body = orSummary(text(payloadOf(event).text), event)
+      return { eventId: event.id, text: body, href: httpHref(body.split(/\s+/).find(word => httpHref(word) !== null) ?? '') }
+    })
+}
+
+/** The latest `item.spec`: the item's current spec. */
+export function specOf(events: readonly Event[]): Spec | null {
+  const specs = oldestFirstEvents(events).filter(one => one.kind === 'item.spec')
+  const event = specs[specs.length - 1]
+  if (event === undefined) return null
+  const p = payloadOf(event)
+  return {
+    eventId: event.id,
+    version: whole(p.version),
+    title: orSummary(text(p.title), event),
+    body: text(p.body_md),
+    acceptance: text(p.acceptance),
+    size: text(p.size),
+    mergeClass: text(p.merge_class),
+    source: text(p.source),
+  }
+}
+
+/** The options of the ask event `askedEventId`, in full; `null` when the log holds no such ask. */
+export function optionsOf(events: readonly Event[], askedEventId: number | null): AskOption[] | null {
+  if (askedEventId === null) return null
+  const asked = events.find(one => one.id === askedEventId && one.kind === 'decision.asked')
+  if (asked === undefined) return null
+  const options = payloadOf(asked).options
+  if (!Array.isArray(options)) return null
+  const rows: AskOption[] = []
+  for (const option of options) {
+    const o = typeof option === 'object' && option !== null ? (option as Payload) : {}
+    if (text(o.label) !== '') rows.push({ label: text(o.label), description: text(o.description) })
+  }
+  return rows
+}
+
+/** `minted Oct 30 from roadmaps/x.md:69@abc · lease ends Nov 7 14:02`; empty when the log says neither. */
+export function headerLine(header: ItemHeader): string {
+  const parts: string[] = []
+  if (header.createdAt !== null) parts.push(`minted ${dayOf(header.createdAt)}${header.source === null ? '' : ` from ${header.source}`}`)
+  else if (header.source !== null) parts.push(`minted from ${header.source}`)
+  if (header.leaseEnds !== null) parts.push(`lease ends ${whenOf(header.leaseEnds)}`)
+  return parts.join(' · ')
 }

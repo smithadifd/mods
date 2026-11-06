@@ -39,8 +39,12 @@ export type Decision = {
   phase: string | null
 }
 
+/** One option of an ask. */
+export type AskOption = { label: string; description: string }
+
 export type Question = {
   askedEventId: number | null
+  options: AskOption[]
   question: string
   ask: string
   fallback: string
@@ -62,6 +66,79 @@ export type Event = {
   model: string | null
   recordedAt: string
   summary: string
+  /** The event's payload as the ledger wrote it; the item screen's sections are projected from it. */
+  payload: Record<string, unknown>
+}
+
+/** Where the item was minted from, when, and how long a claim runs. */
+export type ItemHeader = { source: string | null; createdAt: string | null; leaseEnds: string | null }
+
+/** One `item.linked` event (or the PR a loop build produced). `copyText` is set for a `url` link. */
+export type LinkRow = { eventId: number; rel: string; target: string; href: string | null; copyText: string | null }
+
+/** One `decision.elected` event. */
+export type Election = {
+  eventId: number
+  recordedAt: string
+  question: string
+  chosen: string
+  chosenDescription: string
+  rejected: string[]
+  scope: string
+  quoteRef: number | null
+  quotes: string[]
+  askedEventId: number | null
+}
+
+/** One `decision.recorded` event with its latest standing and result. */
+export type DecisionRecord = {
+  eventId: number
+  recordedAt: string
+  who: string
+  whoKind: string
+  relayedBy: string
+  standing: string
+  supersededBy: number | null
+  effect: string
+  tags: string[]
+  verbatim: string
+  phase: string
+  evidence: string
+  result: string
+  resultEvidence: string
+}
+
+/** The latest `item.stopped` stamp. */
+export type Stop = { eventId: number; recordedAt: string; point: string; phase: string; skills: string[]; refs: string[] }
+
+/** One `item.tried` event. */
+export type Tried = { eventId: number; what: string; outcome: string; phase: string; evidence: string }
+
+/** A recorded review, or a review step the work loop completed. */
+export type Review = {
+  eventId: number
+  round: number | null
+  verdict: string
+  head: string
+  pr: string
+  reviewer: string
+  evidence: string
+  findings: string[]
+}
+
+/** One `item.note`; `href` is the first web address in it. */
+export type Note = { eventId: number; text: string; href: string | null }
+
+/** The latest `item.spec`. */
+export type Spec = {
+  eventId: number
+  version: number | null
+  title: string
+  body: string
+  acceptance: string
+  size: string
+  mergeClass: string
+  source: string
 }
 
 /** An item's resume card plus its log. */
@@ -75,17 +152,15 @@ export type Detail = {
   nextStep: string
   questions: Question[]
   blockers: Line[]
-  notes: Line[]
   progress: Line[]
-  links: Line[]
-  decisions: Line[]
-  records: Line[]
-  tried: Line[]
-  stop: string | null
+  /** Items linked to this one as their duplicate; only the card derives these. */
+  duplicatedBy: Line[]
   footer: string
   revision: { id: number; hash: string } | null
   sourceEventIds: number[]
   events: Event[]
+  /** Why the item's events could not be read; `null` when they were. */
+  eventsError: string | null
   eventsOnItem: number
   eventsDecayed: number
 }

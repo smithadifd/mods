@@ -1,4 +1,4 @@
-import type { Decision, Detail, Doctor, Event, Hit, Item, Line, Question, Verify } from '../types'
+import type { AskOption, Decision, Detail, Doctor, Event, Hit, Item, Line, Question, Verify } from '../types'
 
 /** How the pane reaches the ledger: the command's words, where to run it, which database. */
 export type Cli = { argv: string[]; cwd: string | undefined; db: string }
@@ -229,6 +229,10 @@ function question(value: unknown): Question | null {
   if (text === '') return null
   return {
     askedEventId: numOrNull(value.asked_event_id),
+    options: list(value.options).flatMap((option): AskOption[] => {
+      if (!isObject(option) || str(option.label) === '') return []
+      return [{ label: str(option.label), description: str(option.description) }]
+    }),
     question: text,
     ask: str(value.ask),
     fallback: str(value.default),
@@ -239,11 +243,15 @@ function question(value: unknown): Question | null {
   }
 }
 
-/** The card's sections. `events` stay empty until `parseEvents` fills them. */
+/**
+ * What only the card derives: next step, open questions after re-asks, blockers, duplicated-by.
+ * The card is bounded, so links, notes, decisions, records, tried, stops and reviews are never read from it:
+ * `parseEvents` carries the whole log and the item screen projects those from it.
+ * `events` stay empty until `parseEvents` fills them.
+ */
 export function parseCard(data: unknown): Detail {
   const root = isObject(data) ? data : {}
   const revision = isObject(root.revision) ? root.revision : null
-  const stop = root.stop
   return {
     id: str(root.item_id),
     type: str(root.type),
@@ -256,17 +264,16 @@ export function parseCard(data: unknown): Detail {
       .map(question)
       .filter((one): one is Question => one !== null),
     blockers: lines(root.blockers),
-    notes: lines(root.notes),
     progress: lines(root.progress),
-    links: lines(root.links),
-    decisions: lines(root.decisions),
-    records: lines(root.decision_records),
-    tried: lines(root.tried),
-    stop: stop === null || stop === undefined ? null : textOf(stop) || null,
+    duplicatedBy: list(root.links)
+      .filter(isObject)
+      .filter(row => row.rel === 'duplicated-by' && str(row.target) !== '')
+      .map((row): Line => ({ eventId: numOrNull(row.event_id), text: str(row.target), href: null })),
     footer: str(root.footer),
     revision: revision === null ? null : { id: num(revision.id), hash: str(revision.hash) },
     sourceEventIds: list(root.source_event_ids).filter((one): one is number => typeof one === 'number'),
     events: [],
+    eventsError: null,
     eventsOnItem: 0,
     eventsDecayed: 0,
   }
@@ -309,9 +316,15 @@ export function summarize(kind: string, payload: unknown): string {
   }
 }
 
-/** The item's log from `export-item`, newest first. */
-export function parseEvents(data: unknown): { events: Event[]; onItem: number; decayed: number } {
+/**
+ * The item's log from `export-item`, newest first. `error` says why there is none: an answer
+ * with no event list is a failed read, never an item with no events.
+ */
+export function parseEvents(data: unknown): { events: Event[]; onItem: number; decayed: number; error: string | null } {
   const root = isObject(data) ? data : {}
+  if (!Array.isArray(root.events)) {
+    return { events: [], onItem: 0, decayed: 0, error: 'the ledger answered export-item with no list of events' }
+  }
   const completeness = isObject(root.completeness) ? root.completeness : {}
   const events: Event[] = []
   for (const row of list(root.events)) {
@@ -327,10 +340,11 @@ export function parseEvents(data: unknown): { events: Event[]; onItem: number; d
       model: strOrNull(row.model),
       recordedAt: str(row.recorded_at),
       summary: summarize(kind, row.payload),
+      payload: isObject(row.payload) ? row.payload : {},
     })
   }
   events.sort((a, b) => b.id - a.id)
-  return { events, onItem: num(completeness.events_on_item), decayed: num(completeness.events_decayed) }
+  return { events, onItem: num(completeness.events_on_item), decayed: num(completeness.events_decayed), error: null }
 }
 
 export function parseHits(data: unknown): Hit[] {

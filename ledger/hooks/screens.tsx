@@ -1,6 +1,6 @@
 import type { Elements, RenderElement } from 'claude-code'
 
-import type { Decision, Detail, Event, Item, Line, Screen, View } from '../types'
+import type { AskOption, Decision, Detail, Event, Item, Line, Screen, View } from '../types'
 import {
   STANDING_FILTERS,
   STATUSES,
@@ -13,13 +13,24 @@ import {
   dailyTouches,
   dayOf,
   filterDecisions,
+  electionsOf,
   filterItems,
   fit,
+  headerLine,
+  headerOf,
   kindColor,
+  linksOf,
   needsYou,
+  notesOf,
+  optionsOf,
   pageCount,
   pageOf,
+  recordsOf,
+  reviewsOf,
   segments,
+  specOf,
+  stopOf,
+  triedOf,
   sparkline,
   standingColor,
   standingGlyph,
@@ -407,6 +418,193 @@ function section(ui: Ui, title: string, rows: readonly Line[], prefix: string, f
   )
 }
 
+/** What the log would have drawn, said once, so a failed read never looks like an item with nothing on it. */
+function eventsFailed(ui: Ui, d: Detail): RenderElement {
+  const { Box, Text } = ui
+  return (
+    <Box key="events-failed" flexDirection="column" marginTop={1}>
+      <Text color="error">could not read the events of {d.id}: {d.eventsError ?? ''}</Text>
+      <Text dimColor>The stop stamp, spec, decisions, records, reviews, tried, notes and links come from them and are not shown. Press r to read again.</Text>
+    </Box>
+  )
+}
+
+function askOptions(ui: Ui, askedEventId: number | null, d: Detail, fromCard: readonly AskOption[]): RenderElement | false {
+  const { Box, Text } = ui
+  const options = optionsOf(d.events, askedEventId) ?? fromCard
+  if (options.length === 0) return false
+  return (
+    <Box key="options" flexDirection="column">
+      <Text dimColor>  options:</Text>
+      {options.map((option, index) => (
+        <Text key={`option-${index}`}>
+          {'    '}
+          {String.fromCharCode(65 + (index % 26))}) {option.label}
+          {option.description !== '' ? ` — ${option.description}` : ''}
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
+function copyButton(ui: Ui, key: string, text: string, act: Act): RenderElement {
+  const { Button } = ui
+  return <Button key={key} label="Copy" onPress={() => act.copy(text)} />
+}
+
+function stopRows(ui: Ui, d: Detail, act: Act): RenderElement | false {
+  const { Box, Text } = ui
+  const stop = stopOf(d.events)
+  if (stop === null) return false
+  return (
+    <Box key="stop" flexDirection="column">
+      <Box gap={1}>
+        <Text bold>Stopped</Text>
+        {stop.phase !== '' && <Text dimColor>{stop.phase}</Text>}
+        <Text>{stop.point}</Text>
+        <Text dimColor>#{stop.eventId}</Text>
+      </Box>
+      {stop.skills.length > 0 && <Text dimColor>  skills: {stop.skills.join(', ')}</Text>}
+      {stop.refs.map((ref, index) => (
+        <Box key={`stop-ref-${index}`} gap={1}>
+          <Text dimColor>  ref</Text>
+          <Text>{ref}</Text>
+          {copyButton(ui, `copy-ref-${index}`, ref, act)}
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
+/** Spec, elections, decision records, reviews, tried, notes and links: each a projection of the item's own events. */
+function eventSections(ui: Ui, d: Detail, act: Act): RenderElement {
+  const { Box, Link, Text } = ui
+  const spec = specOf(d.events)
+  const elections = electionsOf(d.events)
+  const records = recordsOf(d.events)
+  const reviews = reviewsOf(d.events)
+  const tried = triedOf(d.events)
+  const notes = notesOf(d.events)
+  const links = linksOf(d.events)
+  return (
+    <Box key="event-sections" flexDirection="column">
+      {spec !== null && (
+        <Box key="spec" flexDirection="column">
+          {sectionHeader(ui, 'Spec', `${spec.version === null ? '' : `v${spec.version}`}${spec.size !== '' ? ` · size ${spec.size}` : ''}${spec.mergeClass !== '' ? ` · ${spec.mergeClass}` : ''} · #${spec.eventId}`)}
+          <Text bold>{spec.title}</Text>
+          {spec.body.split('\n').map((line, index) => (
+            <Text key={`spec-body-${index}`}>{line}</Text>
+          ))}
+          {spec.acceptance !== '' && <Text bold>Acceptance</Text>}
+          {spec.acceptance !== '' &&
+            spec.acceptance.split('\n').map((line, index) => (
+              <Text key={`spec-acceptance-${index}`}>{line}</Text>
+            ))}
+          {spec.source !== '' && <Text dimColor>source {spec.source}</Text>}
+        </Box>
+      )}
+
+      {elections.length > 0 && sectionHeader(ui, 'Decisions', String(elections.length))}
+      {elections.map(one => (
+        <Box key={`election-${one.eventId}`} flexDirection="column" marginBottom={1}>
+          <Box gap={1}>
+            <Text color="claude">●</Text>
+            <Text>{one.question === '' ? one.chosen : `${one.question} → ${one.chosen}`}</Text>
+            <Text dimColor>{dayOf(one.recordedAt)}</Text>
+            <Text dimColor>#{one.eventId}</Text>
+          </Box>
+          {one.chosenDescription !== '' && <Text dimColor>  {one.chosenDescription}</Text>}
+          {one.rejected.length > 0 && <Text dimColor>  rejected: {one.rejected.join(' | ')}</Text>}
+          {one.scope !== '' && <Text dimColor>  scope: {one.scope}</Text>}
+          {(one.quoteRef !== null || one.quotes.length > 0) && (
+            <Text dimColor>
+              {'  '}on these words:{one.quoteRef === null ? '' : ` #${one.quoteRef}`}
+              {one.quotes.length > 0 ? ` ${one.quotes.map(quote => `"${quote}"`).join(' ')}` : ''}
+            </Text>
+          )}
+        </Box>
+      ))}
+
+      {records.length > 0 && sectionHeader(ui, 'Decision records', String(records.length))}
+      {records.map(one => (
+        <Box key={`record-${one.eventId}`} flexDirection="column" marginBottom={1}>
+          <Box gap={1}>
+            <Text color={standingColor(one.standing)}>{standingGlyph(one.standing)}</Text>
+            <Text dimColor>{one.standing}</Text>
+            <Text>{one.who}{one.whoKind !== '' ? ` (${one.whoKind})` : ''}</Text>
+            {one.relayedBy !== '' && <Text dimColor>relayed by {one.relayedBy}</Text>}
+            {one.phase !== '' && <Text dimColor>{one.phase}</Text>}
+            <Text dimColor>{dayOf(one.recordedAt)}</Text>
+            <Text dimColor>#{one.eventId}</Text>
+          </Box>
+          <Text>  {one.effect}</Text>
+          {one.verbatim !== '' && <Text dimColor>  words: {one.verbatim}</Text>}
+          {one.tags.length > 0 && <Text dimColor>  {one.tags.join(' ')}</Text>}
+          {one.evidence !== '' && <Text dimColor>  cites: {one.evidence}</Text>}
+          {one.supersededBy !== null && <Text dimColor>  superseded by #{one.supersededBy}</Text>}
+          {one.result !== '' && <Text dimColor>  result: {one.result}{one.resultEvidence !== '' ? ` (${one.resultEvidence})` : ''}</Text>}
+        </Box>
+      ))}
+
+      {reviews.length > 0 && sectionHeader(ui, 'Reviews', String(reviews.length))}
+      {reviews.map(one => (
+        <Box key={`review-${one.eventId}`} flexDirection="column">
+          <Box gap={1}>
+            <Text dimColor>·</Text>
+            <Text color={/changes|fail|bug|block/i.test(one.verdict) ? 'error' : 'success'}>
+              {one.round === null ? '' : `r${one.round} `}
+              {one.verdict}
+            </Text>
+            {one.head !== '' && <Text dimColor>on {one.head.slice(0, 8)}</Text>}
+            {one.pr !== '' && <Text>{one.pr}</Text>}
+            {one.reviewer !== '' && <Text dimColor>by {one.reviewer}</Text>}
+            {one.evidence !== '' && <Text dimColor>{one.evidence}</Text>}
+            <Text dimColor>#{one.eventId}</Text>
+          </Box>
+          {one.findings.map((finding, index) => (
+            <Text key={`finding-${one.eventId}-${index}`} dimColor>
+              {'    '}- {finding}
+            </Text>
+          ))}
+        </Box>
+      ))}
+
+      {tried.length > 0 && sectionHeader(ui, 'Tried', String(tried.length))}
+      {tried.map(one => (
+        <Box key={`tried-${one.eventId}`} flexDirection="column">
+          <Box gap={1}>
+            <Text dimColor>·</Text>
+            <Text>{one.what}</Text>
+            {one.phase !== '' && <Text dimColor>{one.phase}</Text>}
+            <Text dimColor>#{one.eventId}</Text>
+          </Box>
+          {one.outcome !== '' && <Text dimColor>  outcome: {one.outcome}</Text>}
+          {one.evidence !== '' && <Text dimColor>  evidence: {one.evidence}</Text>}
+        </Box>
+      ))}
+
+      {notes.length > 0 && sectionHeader(ui, 'Notes', String(notes.length))}
+      {notes.map(one => (
+        <Box key={`note-${one.eventId}`} gap={1}>
+          <Text dimColor>·</Text>
+          {one.href !== null ? <Link href={one.href} label={one.text} /> : <Text>{one.text}</Text>}
+          <Text dimColor>#{one.eventId}</Text>
+        </Box>
+      ))}
+
+      {links.length > 0 && sectionHeader(ui, 'Links', String(links.length))}
+      {links.map(one => (
+        <Box key={`link-${one.eventId}-${one.rel}`} gap={1}>
+          <Text dimColor>{fit(one.rel, 10)}</Text>
+          {one.href !== null ? <Link href={one.href} label={one.target} /> : <Text>{one.target}</Text>}
+          {one.copyText !== null && copyButton(ui, `copy-link-${one.eventId}`, one.copyText, act)}
+          <Text dimColor>#{one.eventId}</Text>
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
 function item(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
   const { Box, Button, Text } = ui
   const d: Detail | null = view.item
@@ -432,18 +630,14 @@ function item(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
             {d.revision !== null && <Text dimColor>revision {d.revision.id}</Text>}
           </Box>
           <Text>{d.title}</Text>
+          {d.eventsError === null && headerLine(headerOf(d.events, d.status)) !== '' && <Text dimColor>{headerLine(headerOf(d.events, d.status))}</Text>}
           {d.nextStep !== '' && (
             <Box gap={1}>
               <Text bold>Next</Text>
               <Text>{d.nextStep}</Text>
             </Box>
           )}
-          {d.stop !== null && (
-            <Box gap={1}>
-              <Text bold>Stopped</Text>
-              <Text>{d.stop}</Text>
-            </Box>
-          )}
+          {d.eventsError === null && stopRows(ui, d, act)}
 
           {d.questions.length > 0 && sectionHeader(ui, 'Open questions', String(d.questions.length))}
           {d.questions.map((q, index) => (
@@ -454,6 +648,7 @@ function item(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
               </Box>
               {q.added !== '' && <Text dimColor>  asked {q.added}</Text>}
               {q.ask !== '' && q.ask !== q.question && <Text dimColor>  {q.ask}</Text>}
+              {askOptions(ui, q.askedEventId, d, q.options)}
               {q.recommendation !== '' && <Text dimColor>  recommendation: {q.recommendation}</Text>}
               {q.fallback !== '' && <Text dimColor>  default: {q.fallback}</Text>}
               {q.unblocks !== '' && <Text dimColor>  unblocks: {q.unblocks}</Text>}
@@ -462,12 +657,9 @@ function item(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
           ))}
 
           {section(ui, 'Blockers', d.blockers, 'blocker', frame)}
-          {section(ui, 'Notes', d.notes, 'note', frame)}
+          {section(ui, 'Duplicated by', d.duplicatedBy, 'duplicate', frame)}
           {section(ui, 'Progress', d.progress, 'progress', frame)}
-          {section(ui, 'Tried', d.tried, 'tried', frame)}
-          {section(ui, 'Links', d.links, 'link', frame)}
-          {section(ui, 'Decisions', d.decisions, 'decision', frame)}
-          {section(ui, 'Decision records', d.records, 'record', frame)}
+          {d.eventsError !== null ? eventsFailed(ui, d) : eventSections(ui, d, act)}
 
           {sectionHeader(
             ui,

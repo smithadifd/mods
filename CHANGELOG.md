@@ -2,6 +2,13 @@
 
 Release notes, newest first. Each mod carries its own version in its `plugin.json` and is tagged `<mod>--v<version>`; an entry names the mod it concerns.
 
+## Unreleased
+
+- ledger: the Item screen draws links, elections, decision records, the latest stop stamp, tried, reviews, notes and the spec from the item's own events (`export-item`) instead of the resume card, which is bounded to a few hundred words and drops whole sections, links first, without saying so. The card stays the source for the next step, open questions, blockers, duplicated-by and the decayed count.
+- ledger: an ask shows its options; a `url` link target and a stop ref have a copy button; a header line under the title shows the mint source, the created day and, for a claimed item, when the lease ends.
+- ledger: when `export-item` fails or answers without a list of events, the screen says so and keeps the card's sections.
+- No new ledger verbs: the pane still runs the same eight read verbs.
+
 ## ledger 0.1.0 — 2026-11-05
 
 The first release of the `ledger` mod, a read-only `/ledger` pane over the [ledger](https://github.com/smithadifd/ledger) CLI.

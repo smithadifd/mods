@@ -53,7 +53,7 @@ const EMPTY: View = {
 }
 
 // Change the tag when View's fields change: it declines what an earlier version stored.
-const view = atom({ plugin: 'ledger', key: 'view' } as const, EMPTY, { shape: 'view-1' })
+const view = atom({ plugin: 'ledger', key: 'view' } as const, EMPTY, { shape: 'view-2' })
 
 // Each load takes a number; a result from an older load than the latest is dropped.
 let loads = 0
@@ -130,14 +130,28 @@ async function loadItem($: EngineInterface, cli: Cli, id: string): Promise<boole
     itemError: null,
   }))
   try {
-    const [card, log] = await Promise.all([run($, cli, 'card', ['--', id]), run($, cli, 'export-item', ['--', id])])
+    // A failed or malformed log must not take the card's own sections down with it, nor pass for an empty log.
+    const [card, log] = await Promise.all([
+      run($, cli, 'card', ['--', id]),
+      run($, cli, 'export-item', ['--', id]).then(
+        data => ({ data }),
+        (error: unknown) => ({ error: reason(error) }),
+      ),
+    ])
     if (load !== itemLoads) return true
     const detail = parseCard(card)
-    const events = parseEvents(log)
+    const events = 'error' in log ? { events: [], onItem: 0, decayed: 0, error: log.error } : parseEvents(log.data)
     await update($, view, current => ({
       ...current,
       itemLoading: false,
-      item: { ...detail, id: detail.id === '' ? id : detail.id, events: events.events, eventsOnItem: events.onItem, eventsDecayed: events.decayed },
+      item: {
+        ...detail,
+        id: detail.id === '' ? id : detail.id,
+        events: events.events,
+        eventsError: events.error,
+        eventsOnItem: events.onItem,
+        eventsDecayed: events.decayed,
+      },
     }))
     return true
   } catch (error) {
