@@ -356,6 +356,17 @@ describe('the ledger pane', () => {
     await ui.unmount()
   })
 
+  test('an expired claim with the longest id on Needs you is drawn in full', async ($, on) => {
+    const doctor = { path: '/db/home.db', schema_version: 9, search: { status: 'current', new_events: 0 }, expired_claims: { status: 'expired', items: [{ item_id: 'LONGITEM-123', holder: 'seat-9', expires_at: '2026-11-05T00:00:00Z' }] } }
+    engine(on, [], argv => (argv.includes('doctor') ? ok(doctor) : answer(argv)))
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('needs'))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: 'expired-LONGITEM-123' }))?.text).toContain('LONGITEM-123')
+    await ui.unmount()
+  })
+
   test('a command that cannot start is said plainly', async ($, on) => {
     mock.clock(on)
     on('command.register', () => ({ value: { command: 'ledger' } }))

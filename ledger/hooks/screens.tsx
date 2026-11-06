@@ -313,7 +313,7 @@ function needs(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
   const { Box, Button, Text } = ui
   const found = needsYou(view.items, view.doctor)
   const limit = Math.max(5, Math.floor((frame.rows - 10) / 3))
-  const idWidth = idWidthOf([...found.decisions, ...found.blocked, ...found.claimed].map(one => one.id))
+  const idWidth = idWidthOf([...found.decisions, ...found.blocked, ...found.claimed].map(one => one.id).concat(found.expired.map(one => one.itemId)))
 
   const block = (title: string, rows: Item[], prefix: string, type: string, status: string, empty: string): RenderElement => (
     <Box flexDirection="column">

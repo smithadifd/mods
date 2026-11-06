@@ -11,4 +11,4 @@ The first release of the `ledger` mod, a read-only `/ledger` pane over the [ledg
 - Reads through the CLI only: eight read verbs with `--json`. A write verb cannot be built, and a test proves it.
 - Options `command`, `folder`, `db` and `refreshSeconds`; no hard-coded paths. A missing database draws the ledger's quick start, not an error.
 - Status and standing are told by a glyph and a theme color, so the pane follows the session's theme and color is never the only carrier of meaning.
-- 47 tests under `claude plugin test`; built and tested on Claude Code 2.1.318 against ledger 0.1.5 and later.
+- 48 tests under `claude plugin test`; built and tested on Claude Code 2.1.318 against ledger 0.1.5 and later.

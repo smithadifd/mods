@@ -118,7 +118,7 @@ No hard-coded paths: options and the environment carry what differs between mach
 
 ## How it is built
 
-- **Tests beside the code.** Each mod's `tests/` run under `claude plugin test` against the engine itself, with the mod's hooks above the test's own `$`. The pane's tests mount it, press its buttons, type into its field and read the tree back, on the terminal and desktop surfaces alike, and seed a value an earlier version stored to show it is declined. The `ledger` mod has 47 tests across its CLI parsing, its model and its pane.
+- **Tests beside the code.** Each mod's `tests/` run under `claude plugin test` against the engine itself, with the mod's hooks above the test's own `$`. The pane's tests mount it, press its buttons, type into its field and read the tree back, on the terminal and desktop surfaces alike, and seed a value an earlier version stored to show it is declined. The `ledger` mod has 48 tests across its CLI parsing, its model and its pane.
 - **The engine's own declarations.** `tsc -p <mod>` type-checks against the API as the engine wrote it beside the mod, under `strict` and `noUncheckedIndexedAccess`.
 - **CI runs what it can.** On every push and pull request: `claude plugin validate --strict` on the marketplace and on each mod, then `claude plugin test` on each mod, under the Claude Code version the mods were built against. The type-check runs on a developer's machine: the declarations it needs are written only by an interactive session, so a runner has none to check against.
 - **Read-only by construction.** A mod that reads a person's data runs a fixed list of read commands and nothing else. The list is code, and a test tries a write.
