@@ -60,7 +60,7 @@ const EMPTY: View = {
 }
 
 // Change the tag when View's fields change: it declines what an earlier version stored.
-const view = atom({ plugin: 'ledger', key: 'view' } as const, EMPTY, { shape: 'view-3' })
+const view = atom({ plugin: 'ledger', key: 'view' } as const, EMPTY, { shape: 'view-4' })
 
 // Each load takes a number; a result from an older load than the latest is dropped.
 let loads = 0

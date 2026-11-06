@@ -426,6 +426,18 @@ describe('the item screen projects its sections from the events', () => {
     expect(specMoved([...specs, stamped, ev(24, 'item.state', { status: 'open' }), ev(25, 'item.state', { status: 'claimed', claim: 's' })])).toBe(false)
   })
 
+  test('spec moved: a claimed state with no holder is not a stamped claim', () => {
+    const specs = [ev(10, 'item.spec', { version: 1, title: 'a', body_md: 'x' }), ev(20, 'item.spec', { version: 2, title: 'b', body_md: 'y' })]
+    expect(specMoved([...specs, ev(15, 'item.state', { status: 'claimed', spec_version: 1 })])).toBe(false)
+  })
+
+  test('spec moved: a release ends the run even when it carries the same claim', () => {
+    const specs = [ev(10, 'item.spec', { version: 1, title: 'a', body_md: 'x' }), ev(20, 'item.spec', { version: 2, title: 'b', body_md: 'y' })]
+    const stamped = ev(15, 'item.state', { status: 'claimed', claim: 's', spec_version: 1 })
+    const released = ev(22, 'item.state', { status: 'released', claim: 's' })
+    expect(specMoved([...specs, stamped, released, ev(25, 'item.state', { status: 'claimed', claim: 's' })])).toBe(false)
+  })
+
   test('spec body: a missing, empty or non-string body reads as not recorded and never throws', () => {
     const [none, number, empty, fine] = [
       ev(4, 'item.spec', { version: 4, title: 'd', body_md: 'ok' }),
