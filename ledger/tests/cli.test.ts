@@ -248,3 +248,15 @@ describe('the parsers', () => {
     expect(parseVerify(refused('chain', 'hash mismatch at event 12'), 'now')).toEqual({ ok: false, events: 0, message: 'hash mismatch at event 12', at: 'now' })
   })
 })
+
+describe('export-item provenance', () => {
+  test('an event carries its session, idempotency key and hash for the expanded timeline row', () => {
+    const parsed = parseEvents({
+      completeness: { events_on_item: 1, events_returned: 1, events_decayed: 0 },
+      events: [{ id: 5, kind: 'item.note', actor: 'a', harness: 'h', model: 'm', session: 's-1', idempotency_key: 'k-5', hash: 'h-5', recorded_at: '2026-10-30T12:00:00Z', payload: { text: 'x' } }],
+    })
+    expect(parsed.events[0]).toMatchObject({ session: 's-1', idempotencyKey: 'k-5', hash: 'h-5', model: 'm' })
+    const bare = parseEvents({ events: [{ id: 6, kind: 'item.note', recorded_at: '2026-10-30T12:00:00Z', payload: {} }] })
+    expect(bare.events[0]).toMatchObject({ session: null, idempotencyKey: '', hash: '' })
+  })
+})

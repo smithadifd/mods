@@ -17,7 +17,7 @@ import {
   parseVerify,
 } from './cli'
 import type { Cli, Ran, Verb } from './cli'
-import { parseCommandArgs } from './model'
+import { navBack, navOpen, navStep, parseCommandArgs, scrollArgs } from './model'
 import { draw } from './screens'
 import type { Act, Ui } from './screens'
 
@@ -44,6 +44,12 @@ const EMPTY: View = {
   item: null,
   itemLoading: false,
   itemError: null,
+  itemReadAt: null,
+  siblings: [],
+  history: [],
+  timelineOrder: 'newest',
+  timelineKind: 'all',
+  openEvents: [],
   expanded: null,
   query: '',
   hits: [],
@@ -53,7 +59,7 @@ const EMPTY: View = {
 }
 
 // Change the tag when View's fields change: it declines what an earlier version stored.
-const view = atom({ plugin: 'ledger', key: 'view' } as const, EMPTY, { shape: 'view-2' })
+const view = atom({ plugin: 'ledger', key: 'view' } as const, EMPTY, { shape: 'view-3' })
 
 // Each load takes a number; a result from an older load than the latest is dropped.
 let loads = 0
@@ -126,6 +132,8 @@ async function loadItem($: EngineInterface, cli: Cli, id: string): Promise<boole
     screen: 'item',
     itemId: id,
     item: current.itemId === id ? current.item : null,
+    itemReadAt: current.itemId === id ? current.itemReadAt : null,
+    openEvents: current.itemId === id ? current.openEvents : [],
     itemLoading: true,
     itemError: null,
   }))
@@ -144,6 +152,7 @@ async function loadItem($: EngineInterface, cli: Cli, id: string): Promise<boole
     await update($, view, current => ({
       ...current,
       itemLoading: false,
+      itemReadAt: nowIso(),
       item: {
         ...detail,
         id: detail.id === '' ? id : detail.id,
@@ -206,7 +215,37 @@ function actions($: EngineInterface, cli: Cli): Act {
         if (current.screen === 'search' && current.searched !== null) void runSearch($, cli, current.searched)
       })
     },
-    openItem: id => void loadItem($, cli, id),
+    openItem: (id, siblings) =>
+      void (async () => {
+        await update($, view, (current): View => {
+          const next = navOpen({ screen: current.screen, itemId: current.itemId, history: current.history, siblings: current.siblings }, id, siblings ?? null)
+          return { ...current, history: next.history, siblings: next.siblings }
+        })
+        await loadItem($, cli, id)
+      })(),
+    step: delta =>
+      void read($, view).then(current => {
+        const target = navStep({ screen: current.screen, itemId: current.itemId, history: current.history, siblings: current.siblings }, delta)
+        if (target !== null) void loadItem($, cli, target)
+      }),
+    historyBack: () =>
+      void read($, view).then(async current => {
+        const back = navBack({ screen: current.screen, itemId: current.itemId, history: current.history, siblings: current.siblings })
+        if (back === null) return
+        await update($, view, (now): View => ({ ...now, history: back.history }))
+        await loadItem($, cli, back.id)
+      }),
+    jump: async key => {
+      const moved = await $.ui.scroll(scrollArgs(PANE, key))
+      if (moved.deny !== undefined) $.ui.toast(`Could not scroll: ${moved.deny}`)
+    },
+    setTimelineOrder: order => void update($, view, current => ({ ...current, timelineOrder: order })),
+    setTimelineKind: kind => void update($, view, current => ({ ...current, timelineKind: kind })),
+    toggleEvent: eventId =>
+      void update($, view, (current): View => ({
+        ...current,
+        openEvents: current.openEvents.includes(eventId) ? current.openEvents.filter(one => one !== eventId) : [...current.openEvents, eventId],
+      })),
     back: () => void update($, view, (current): View => ({ ...current, screen: 'items' })),
     listWith: (type, status) => void update($, view, (current): View => ({ ...current, screen: 'items', typeFilter: type, statusFilter: status, page: 0 })),
     setType: type => void update($, view, current => ({ ...current, typeFilter: type, page: 0 })),
@@ -253,6 +292,7 @@ export const register: Register = (on, options) => {
     await update($, view, current => ({ ...current, isOpen: true }))
     void loadAll($, cli)
     if ('id' in asked) {
+      await update($, view, (current): View => ({ ...current, history: [], siblings: [] }))
       void loadItem($, cli, asked.id).then(found => {
         // One word that names no item is a search for it.
         if (!found) void runSearch($, cli, asked.id)
@@ -278,6 +318,7 @@ export const register: Register = (on, options) => {
     return draw(ui, current, actions($, cli), {
       width: e.props.bodyColumns,
       rows: e.props.scroll.bodyRows,
+      offset: e.props.scroll.offset,
       now: Date.now(),
     })
   })

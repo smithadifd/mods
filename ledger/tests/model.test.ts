@@ -3,38 +3,61 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { Event, Item } from '../types'
 import {
   ageOf,
+  answeredAsksOf,
+  bandOf,
   barLength,
+  clockOf,
   countByStatus,
   countsByType,
   cut,
   dailyTouches,
+  dayGroups,
+  dayOf,
   electionsOf,
   filterDecisions,
   filterItems,
+  firstOpenable,
   fit,
+  grantOf,
+  groupLinks,
   headerLine,
   headerOf,
+  isRecommended,
   kindColor,
+  kindGroup,
+  leaseWords,
   linksOf,
+  navBack,
+  navOpen,
+  navStep,
   needsYou,
   notesOf,
   optionsOf,
   pageCount,
   pageOf,
   parseCommandArgs,
+  prShort,
   recordsOf,
   reviewsOf,
   segments,
   sortItems,
+  spanOf,
   sparkline,
   specOf,
+  stampOf,
   stopOf,
+  stripOf,
+  ticketOf,
+  timelineOf,
   triedOf,
   standingColor,
   standingGlyph,
   statusColor,
   statusGlyph,
+  scrollArgs,
+  windowOf,
 } from '../hooks/model'
+import type { Nav } from '../hooks/model'
 
 const NOW = Date.parse('2026-11-06T12:00:00Z')
 
@@ -210,7 +233,7 @@ describe('the command line', () => {
 })
 
 function ev(id: number, kind: string, payload: Record<string, unknown>, recordedAt = '2026-10-30T12:00:00Z'): Event {
-  return { id, kind, actor: 'seat', harness: 'cli', model: null, recordedAt, summary: `summary of ${kind} ${id}`, payload }
+  return { id, kind, actor: 'seat', harness: 'cli', model: null, session: null, idempotencyKey: `key-${id}`, hash: `hash-${id}`, recordedAt, summary: `summary of ${kind} ${id}`, payload }
 }
 
 describe('the item screen projects its sections from the events', () => {
@@ -384,5 +407,236 @@ describe('the item screen projects its sections from the events', () => {
   test('a payload that is not an object never throws', () => {
     const odd = [{ ...ev(1, 'item.linked', {}), payload: null as never }, { ...ev(2, 'decision.elected', {}), payload: 'x' as never }]
     expect(() => [linksOf(odd), electionsOf(odd), recordsOf(odd), stopOf(odd), triedOf(odd), reviewsOf(odd), notesOf(odd), specOf(odd), headerOf(odd, 'claimed')]).not.toThrow()
+  })
+})
+
+const T0 = Date.parse('2026-10-30T12:00:00Z')
+
+function at(minutes: number): string {
+  return new Date(T0 + minutes * 60_000).toISOString()
+}
+
+describe('the item screen layout: width bands, leases and spans', () => {
+  test('the three width bands, and a width outside them clamps to the nearest', () => {
+    expect([bandOf(69), bandOf(70), bandOf(119), bandOf(120)]).toEqual(['narrow', 'standard', 'standard', 'wide'])
+    expect([bandOf(0), bandOf(-4), bandOf(100_000)]).toEqual(['narrow', 'narrow', 'wide'])
+    expect(bandOf(Number.NaN)).toBe('standard')
+  })
+
+  test('a span reads as a person says it', () => {
+    expect([spanOf(45_000), spanOf(17 * 60_000), spanOf(2 * 3_600_000), spanOf(3 * 86_400_000), spanOf(-5)]).toEqual(['45s', '17m', '2h', '3d', '0s'])
+  })
+
+  test('a lease reads in words, and a lease past its end says it ended', () => {
+    const now = Date.parse('2026-11-07T12:00:00Z')
+    expect(leaseWords('2026-11-07T14:00:00Z', now)).toEqual({ text: 'lease ends in 2h', ended: false })
+    expect(leaseWords('2026-11-07T09:00:00Z', now)).toEqual({ text: 'lease ended 3h ago', ended: true })
+    expect(leaseWords(null, now)).toBe(null)
+    expect(leaseWords('not a time', now)).toBe(null)
+  })
+
+  test('clock and stamp', () => {
+    expect(clockOf('not a time', false)).toBe('?')
+    expect(clockOf(at(0), false)).toMatch(/^\d\d:\d\d$/)
+    expect(clockOf(at(0), true)).toMatch(/^\d\d:\d\d:\d\d$/)
+    expect(stampOf(at(0))).toMatch(/^Oct \d+ \d\d:\d\d:\d\d$/)
+  })
+})
+
+describe('the timeline', () => {
+  const log = [
+    ev(1, 'item.created', { type: 'ticket', title: 't' }, at(-2 * 24 * 60)),
+    ev(10, 'loop.intent', { operation: 'build', operation_id: 'b1' }, at(0)),
+    ev(11, 'loop.done', { operation: 'build', operation_id: 'b1', intent_event_id: 10, target: 'https://github.com/o/r/pull/133' }, at(17)),
+    ev(12, 'loop.intent', { operation: 'review', operation_id: 'r1', head: '3c0d5aa1122334455' }, at(20)),
+    ev(13, 'loop.done', { operation: 'review', operation_id: 'r1', intent_event_id: 12, verdict: 'changes', head: '3c0d5aa1122334455' }, at(25)),
+    ev(14, 'loop.intent', { operation: 'build', operation_id: 'b2' }, at(30)),
+    ev(15, 'decision.elected', { question: 'q', chosen: 'c' }, at(31)),
+    ev(16, 'item.note', { text: 'a note' }, at(32)),
+    ev(17, 'session.opened', { purpose: 'x' }, at(33)),
+  ]
+
+  test('a loop intent and its completion fold into one row with the round and the elapsed time', () => {
+    const rows = timelineOf(log, 'all', 'oldest')
+    expect(rows.map(row => row.id)).toEqual([1, 11, 13, 14, 15, 16, 17])
+    const build = rows.find(row => row.id === 11)!
+    expect(build).toMatchObject({ summary: 'build r1 → PR #133', elapsed: '17m', folded: true })
+    expect(build.events.map(one => one.id)).toEqual([10, 11])
+    expect(rows.find(row => row.id === 13)).toMatchObject({ summary: 'review r1 on 3c0d5aa → changes', elapsed: '5m' })
+    // An intent with no completion yet stays a row of its own, unfolded.
+    expect(rows.find(row => row.id === 14)).toMatchObject({ folded: false, elapsed: null })
+  })
+
+  test('a completion whose intent is not in the list stays a row, and a second completion does not steal the intent', () => {
+    const lone = timelineOf([ev(5, 'loop.done', { operation: 'merge', operation_id: 'm', intent_event_id: 99, head: 'abcdef0123' }, at(0))], 'all', 'newest')
+    expect(lone).toHaveLength(1)
+    expect(lone[0]).toMatchObject({ id: 5, folded: false })
+    const twice = timelineOf(
+      [
+        ev(1, 'loop.intent', { operation: 'merge', operation_id: 'm' }, at(0)),
+        ev(2, 'loop.done', { operation: 'merge', operation_id: 'm', intent_event_id: 1, head: 'abcdef0123' }, at(1)),
+        ev(3, 'loop.done', { operation: 'merge', operation_id: 'm', intent_event_id: 1, head: 'abcdef0123' }, at(2)),
+      ],
+      'all',
+      'oldest',
+    )
+    expect(twice.map(row => [row.id, row.folded])).toEqual([[2, true], [3, false]])
+  })
+
+  test('newest first by default, oldest first on the toggle', () => {
+    expect(timelineOf(log, 'all', 'newest').map(row => row.id)).toEqual([17, 16, 15, 14, 13, 11, 1])
+    expect(timelineOf(log, 'all', 'oldest').map(row => row.id)).toEqual([1, 11, 13, 14, 15, 16, 17])
+  })
+
+  test('the kind filter narrows by group, and every kind belongs to one', () => {
+    expect(timelineOf(log, 'decisions', 'oldest').map(row => row.id)).toEqual([15])
+    expect(timelineOf(log, 'notes', 'oldest').map(row => row.id)).toEqual([16])
+    expect(timelineOf(log, 'state', 'oldest').map(row => row.id)).toEqual([1])
+    expect(timelineOf(log, 'loop', 'oldest').map(row => row.id)).toEqual([11, 13, 14])
+    expect(timelineOf(log, 'provenance', 'oldest').map(row => row.id)).toEqual([17])
+    expect(kindGroup('some.future.kind')).toBe('provenance')
+    expect(kindGroup('item.linked')).toBe('state')
+    expect(kindGroup('outside.recorded')).toBe('provenance')
+  })
+
+  test('day groups keep the order given and count events, a folded pair being two', () => {
+    const groups = dayGroups(timelineOf(log, 'all', 'newest'))
+    expect(groups.map(group => [group.day, group.events])).toEqual([
+      [dayOf(at(0)), 8],
+      [dayOf(at(-2 * 24 * 60)), 1],
+    ])
+    expect(groups[0]!.rows.map(row => row.id)).toEqual([17, 16, 15, 14, 13, 11])
+  })
+
+  test('the window draws every row when there are 40 or fewer, and a margin around the pane past that', () => {
+    expect(windowOf(40, 500, 30, 0, 5)).toEqual({ from: 0, to: 40 })
+    // 100 rows, 10 lines of body above them, the pane scrolled to line 60 and 30 rows tall, a margin of 5.
+    expect(windowOf(100, 60, 30, 10, 5)).toEqual({ from: 45, to: 85 })
+    // Scrolled past the end, the last rows; above the first row, the first.
+    expect(windowOf(100, 5000, 30, 10, 5)).toEqual({ from: 94, to: 100 })
+    expect(windowOf(100, 0, 30, 10, 5)).toEqual({ from: 0, to: 35 })
+  })
+})
+
+describe('the strip, navigation, links and the ticket pass', () => {
+  test('a strip button scrolls its section header to the top of the pane', () => {
+    expect(scrollArgs('ledger', 'section-timeline')).toEqual({ in: 'ledger', to: { key: 'section-timeline' }, block: 'start' })
+  })
+
+  test('the strip counts what is there, shows a dash when empty and a question mark when the events were unread', () => {
+    const none = stripOf([])
+    expect(none.map(entry => `${entry.label}:${entry.hotkey}:${entry.count}`)).toEqual(['Now:n:', 'Decisions:e:–', 'Links:l:–', 'Timeline:t:–', 'Spec:p:–'])
+    const some = stripOf([
+      ev(1, 'decision.elected', { question: 'q', chosen: 'c' }),
+      ev(2, 'decision.recorded', { who: 'w', effect: 'e' }),
+      ev(3, 'item.linked', { rel: 'url', target: 'https://x.test' }),
+      ev(4, 'item.spec', { version: 1 }),
+      ev(5, 'item.spec', { version: 2 }),
+    ])
+    expect(some.map(entry => entry.count)).toEqual(['', '2', '1', '5', '2'])
+    expect(stripOf(null).map(entry => entry.count)).toEqual(['', '?', '?', '?', '?'])
+  })
+
+  test('the ticket section is in the strip only when the item carries framed ticket notes', () => {
+    expect(stripOf([ev(1, 'item.note', { text: 'plain' })]).some(entry => entry.section === 'ticket')).toBe(false)
+    const framed = [ev(1, 'item.note', { text: 'ticket-review:v2 {"round":1,"verdict":"pass","reviewer":"fresh"}' })]
+    expect(stripOf(framed).find(entry => entry.section === 'ticket')).toMatchObject({ hotkey: 'g', count: '1' })
+  })
+
+  test('ticket notes: readable frames are summarised, an unreadable one is kept and marked', () => {
+    const notes = ticketOf([
+      ev(1, 'item.note', { text: 'ticket-plan:v2 {"revision":1,"criteria":["a","b"]}' }),
+      ev(2, 'item.note', { text: 'ticket-decision:v2 {"gate":"plan","plan_revision":1,"who":"the person","verbatim":"Go"}' }),
+      ev(3, 'item.note', { text: 'ticket-review:v2 {"round":1,"verdict":"pass","reviewer":"fresh"}' }),
+      ev(4, 'item.note', { text: 'ticket-plan:v3 {not json' }),
+      ev(5, 'item.note', { text: 'ticket-other:v2 {}' }),
+      ev(6, 'item.note', { text: 'plain' }),
+    ])
+    expect(notes.map(one => [one.eventId, one.type, one.readable, one.text])).toEqual([
+      [1, 'plan', true, 'plan r1 · 2 criteria'],
+      [2, 'decision', true, 'plan go r1 the person "Go"'],
+      [3, 'review', true, 'review r1 pass · fresh'],
+      [4, 'plan', false, 'unreadable ticket record (v3)'],
+    ])
+  })
+
+  test('opening an item from a list remembers the list; from another item it pushes the history', () => {
+    const list: Nav = { screen: 'items', itemId: null, history: [], siblings: [] }
+    expect(navOpen(list, 'A', ['A', 'B', 'C'])).toEqual({ history: [], siblings: ['A', 'B', 'C'] })
+    const onA: Nav = { screen: 'item', itemId: 'A', history: [], siblings: ['A', 'B', 'C'] }
+    expect(navOpen(onA, 'X', null)).toEqual({ history: ['A'], siblings: ['A', 'B', 'C'] })
+    expect(navOpen({ ...onA, itemId: 'X', history: ['A'] }, 'Y', null).history).toEqual(['A', 'X'])
+    // Reopening the item on screen changes nothing; a list opened later starts a fresh history.
+    expect(navOpen(onA, 'A', null)).toEqual({ history: [], siblings: ['A', 'B', 'C'] })
+    expect(navOpen({ ...onA, screen: 'search', history: ['Q'] }, 'B', ['B']).history).toEqual([])
+  })
+
+  test('the history is bounded', () => {
+    const deep: Nav = { screen: 'item', itemId: 'N', history: Array.from({ length: 50 }, (_, index) => `h${index}`), siblings: [] }
+    const next = navOpen(deep, 'M', null)
+    expect(next.history).toHaveLength(50)
+    expect(next.history[49]).toBe('N')
+    expect(next.history[0]).toBe('h1')
+  })
+
+  test('previous and next step along the list the item came from, and stop at its ends', () => {
+    const nav: Nav = { screen: 'item', itemId: 'B', history: [], siblings: ['A', 'B', 'C'] }
+    expect([navStep(nav, -1), navStep(nav, 1)]).toEqual(['A', 'C'])
+    expect(navStep({ ...nav, itemId: 'A' }, -1)).toBe(null)
+    expect(navStep({ ...nav, itemId: 'C' }, 1)).toBe(null)
+    expect(navStep({ ...nav, itemId: 'Z' }, 1)).toBe(null)
+    expect(navStep({ ...nav, siblings: [] }, 1)).toBe(null)
+  })
+
+  test('back pops the history', () => {
+    expect(navBack({ screen: 'item', itemId: 'X', history: ['A', 'B'], siblings: [] })).toEqual({ id: 'B', history: ['A'] })
+    expect(navBack({ screen: 'item', itemId: 'X', history: [], siblings: [] })).toBe(null)
+  })
+
+  test('the first PR link, else the first url, is what o takes', () => {
+    const rows = linksOf([ev(1, 'item.linked', { rel: 'url', target: 'notes/a.md' }), ev(2, 'item.linked', { rel: 'pr', target: 'https://github.com/o/r/pull/7' })])
+    expect(firstOpenable(rows)).toEqual({ text: 'https://github.com/o/r/pull/7', label: 'PR link' })
+    expect(firstOpenable(rows.filter(one => one.rel === 'url'))).toEqual({ text: 'notes/a.md', label: 'url' })
+    expect(firstOpenable([])).toBe(null)
+  })
+
+  test('links group by relation in the design order, and a pull request reads as repo#number', () => {
+    const rows = linksOf([
+      ev(1, 'item.linked', { rel: 'item', target: 'X' }),
+      ev(2, 'item.linked', { rel: 'blocks', target: 'Y' }),
+      ev(3, 'item.linked', { rel: 'odd', target: 'Z' }),
+      ev(4, 'item.linked', { rel: 'url', target: 'https://x.test' }),
+      ev(5, 'item.linked', { rel: 'pr', target: 'https://github.com/o/r/pull/7' }),
+      ev(6, 'item.linked', { rel: 'item', target: 'X2' }),
+    ])
+    expect(groupLinks(rows).map(one => one.target)).toEqual(['https://github.com/o/r/pull/7', 'https://x.test', 'X', 'X2', 'Y', 'Z'])
+    expect(prShort('https://github.com/o/r/pull/7')).toBe('o/r#7')
+    expect(prShort('not a pr')).toBe('not a pr')
+  })
+
+  test('an ask answered is paired to its election by event id or by question id; a grant election names its grant', () => {
+    const log = [
+      ev(1, 'decision.asked', { question: 'by id?', options: [{ label: 'a' }] }),
+      ev(2, 'decision.asked', { question: 'by key?', question_id: 'grant:g1', options: [{ label: 'a' }] }),
+      ev(3, 'decision.asked', { question: 'still open?', options: [{ label: 'a' }] }),
+      ev(4, 'decision.elected', { question: 'by id?', chosen: 'yes', asked_event_id: 1 }),
+      ev(5, 'decision.elected', { question: 'by key?', chosen: 'no', question_id: 'grant:g1' }),
+    ]
+    expect(answeredAsksOf(log)).toEqual([
+      { askedEventId: 2, question: 'by key?', chosen: 'no', electionId: 5 },
+      { askedEventId: 1, question: 'by id?', chosen: 'yes', electionId: 4 },
+    ])
+    expect(grantOf(log, 5)).toBe('grant:g1')
+    expect(grantOf(log, 4)).toBe('')
+    expect(electionsOf(log)[1]!.questionId).toBe('grant:g1')
+  })
+
+  test('the recommended option is the one named by letter or by label', () => {
+    expect([isRecommended({ label: 'Ship', description: '' }, 0, 'A'), isRecommended({ label: 'Wait', description: '' }, 1, 'A'), isRecommended({ label: 'Wait', description: '' }, 1, 'wait'), isRecommended({ label: 'Wait', description: '' }, 1, '')]).toEqual([true, false, true, false])
+  })
+
+  test('nothing here throws on a payload that is not an object', () => {
+    const odd = [{ ...ev(1, 'loop.done', {}), payload: null as never }, { ...ev(2, 'loop.intent', {}), payload: 'x' as never }, { ...ev(3, 'item.note', {}), payload: [] as never }, ev(4, 'decision.asked', {})]
+    expect(() => [timelineOf(odd, 'all', 'newest'), dayGroups(timelineOf(odd, 'all', 'oldest')), stripOf(odd), ticketOf(odd), answeredAsksOf(odd), groupLinks(linksOf(odd))]).not.toThrow()
   })
 })

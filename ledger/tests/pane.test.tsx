@@ -1,7 +1,10 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { MockClock, TestBody } from 'claude-code/testing'
 
-import { READ_VERBS } from '../hooks/cli'
+import type { View } from '../types'
+import { READ_VERBS, parseCard, parseEvents } from '../hooks/cli'
+import { draw } from '../hooks/screens'
+import type { Act, Ui } from '../hooks/screens'
 
 const PANE = {
   plugin: 'ledger',
@@ -543,4 +546,551 @@ describe('the item screen draws from the item\'s own events', () => {
       await ui.unmount()
     })
   }
+})
+
+/* The item screen's layout: strip, Now, timeline, navigation, width bands and error states. */
+
+type Node = { type: string; props: Record<string, unknown> }
+
+/** The elements as plain data, one constructor per tag, as the engine hands them out; for reading a drawn tree without an engine. */
+const FAKE = Object.fromEntries(['Box', 'Text', 'Button', 'Input', 'Select', 'Link', 'Code'].map(type => [type, (props: Record<string, unknown>) => ({ type, props })])) as unknown as Ui
+
+function nodes(tree: unknown, into: Node[] = []): Node[] {
+  if (Array.isArray(tree)) {
+    for (const one of tree) nodes(one, into)
+  } else if (typeof tree === 'object' && tree !== null && 'type' in tree && 'props' in tree) {
+    const node = tree as Node
+    into.push(node)
+    nodes(node.props.children, into)
+  }
+  return into
+}
+
+function stamped(id: number, kind: string, payload: Record<string, unknown>, recordedAt: string): Record<string, unknown> {
+  return { id, kind, actor: 'seat-1', harness: 'claude-code', model: 'model-x', session: 'sess-1', idempotency_key: `key-${id}`, hash: `hash-${id}`, recorded_at: recordedAt, payload }
+}
+
+const FAR_PAST = '2020-01-01T00:00:00.000Z'
+const FAR_FUTURE = '2099-01-01T00:00:00.000Z'
+
+const LOOP_CARD = {
+  ...CARD,
+  item_id: 'L1',
+  type: 'ticket',
+  title: 'title of L1',
+  status: 'claimed',
+  claim: 'seat-1',
+  next_step: 'Review round 1.',
+  blockers: ['A1 has not landed'],
+  notes: [],
+  links: [],
+  open_questions: [
+    {
+      asked_event_id: 3,
+      question: 'Ship it?',
+      ask: 'ship',
+      options: [{ label: 'Ship', description: 'ship now' }, { label: 'Wait', description: 'wait a week' }],
+      recommendation: 'B',
+      default: 'B',
+      unblocks: '',
+      effort: '',
+      added: '',
+    },
+  ],
+}
+
+function loopLog(extra: Record<string, unknown>[] = [], lease = FAR_PAST): Ran {
+  return ok({
+    completeness: { events_on_item: 9 + extra.length, events_returned: 9 + extra.length, events_decayed: 2 },
+    events: [
+      stamped(1, 'item.created', { type: 'ticket', title: 'title of L1', source: 'roadmaps/x.md:1@abc' }, '2026-10-28T12:00:00Z'),
+      stamped(2, 'item.state', { status: 'claimed', claim: 'seat-1', expires_at: lease }, '2026-10-28T12:01:00Z'),
+      stamped(3, 'decision.asked', { question: 'Ship it?', options: [{ label: 'Ship', description: 'ship now' }, { label: 'Wait', description: 'wait a week' }] }, '2026-10-28T12:02:00Z'),
+      stamped(10, 'loop.intent', { operation: 'build', operation_id: 'b1' }, '2026-10-30T12:00:00Z'),
+      stamped(11, 'loop.done', { operation: 'build', operation_id: 'b1', intent_event_id: 10, target: 'https://github.com/o/r/pull/133' }, '2026-10-30T12:17:00Z'),
+      stamped(12, 'loop.intent', { operation: 'review', operation_id: 'r1', head: '3c0d5aa1122334455' }, '2026-10-30T12:20:00Z'),
+      stamped(13, 'loop.done', { operation: 'review', operation_id: 'r1', intent_event_id: 12, verdict: 'changes', head: '3c0d5aa1122334455' }, '2026-10-30T12:25:00Z'),
+      stamped(14, 'item.note', { text: 'a plain note' }, '2026-10-30T12:26:00Z'),
+      stamped(15, 'item.linked', { rel: 'pr', target: 'https://github.com/o/r/pull/133' }, '2026-10-30T12:27:00Z'),
+      ...extra,
+    ],
+  })
+}
+
+function loopReply(log: Ran = loopLog(), card: Ran = ok(LOOP_CARD)): (argv: readonly string[]) => Ran {
+  return argv => {
+    const verb = argv.find(word => (READ_VERBS as readonly string[]).includes(word))
+    if (argv.includes('L1') && verb === 'card') return card
+    if (argv.includes('L1') && verb === 'export-item') return log
+    return answer(argv)
+  }
+}
+
+/** The pane's props at another width, or scrolled. */
+function paneAt(columns: number, offset = 0, bodyRows = 30) {
+  return { ...PANE, props: { ...PANE.props, bodyColumns: columns, scroll: { offset, bodyRows } }, surface: 'terminal' as const }
+}
+
+async function openL1($: Parameters<TestBody>[0], on: On, reply = loopReply(), copies: string[] = [], seen: string[][] = []) {
+  engine(on, seen, reply, copies)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run(command('L1'))
+}
+
+describe('the item screen: strip, Now and the timeline', () => {
+  test('the strip has a button per section with its hotkey and count, and no Ticket without ticket notes', async ($, on) => {
+    await openL1($, on)
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+
+    const entries = await Promise.all(['now', 'decisions', 'links', 'timeline', 'spec'].map(name => ui.find({ key: `strip-${name}` })))
+    expect(entries.map(one => [one?.props.label, one?.props.hotkey])).toEqual([
+      ['Now', 'n'],
+      ['Decisions –', 'e'],
+      ['Links 1', 'l'],
+      ['Timeline 9', 't'],
+      ['Spec –', 'p'],
+    ])
+    expect(await ui.find({ key: 'strip-ticket' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('the strip carries Ticket, on g, when the item has framed ticket notes', async ($, on) => {
+    await openL1($, on, loopReply(loopLog([stamped(20, 'item.note', { text: 'ticket-review:v2 {"round":1,"verdict":"pass","reviewer":"fresh"}' }, '2026-10-30T13:00:00Z'), stamped(21, 'item.note', { text: 'ticket-plan:v9 {broken' }, '2026-10-30T13:01:00Z')])))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: 'strip-ticket' }))?.props).toMatchObject({ label: 'Ticket 2', hotkey: 'g' })
+    expect((await ui.find({ key: 'ticket-20' }))?.text).toContain('review r1 pass · fresh')
+    expect((await ui.find({ key: 'ticket-21' }))?.text).toContain('unreadable ticket record (v9)')
+    await ui.unmount()
+  })
+
+  test('each strip button asks the pane to scroll to its own section header, which is drawn under that key', () => {
+    const calls: [string, unknown[]][] = []
+    const act = new Proxy({}, { get: (_, name) => (...args: unknown[]) => calls.push([String(name), args]) }) as Act
+    const data = JSON.parse(loopLog().stdout).data
+    const events = parseEvents(data)
+    const view: View = {
+      screen: 'item',
+      isOpen: true,
+      loading: false,
+      error: null,
+      loadedAt: null,
+      doctor: null,
+      items: [],
+      ready: [],
+      decisions: [],
+      typeFilter: 'all',
+      statusFilter: 'all',
+      standingFilter: 'all',
+      page: 0,
+      itemId: 'L1',
+      item: { ...parseCard(LOOP_CARD), events: events.events, eventsError: null, eventsOnItem: events.onItem, eventsDecayed: events.decayed },
+      itemLoading: false,
+      itemError: null,
+      itemReadAt: null,
+      siblings: [],
+      history: [],
+      timelineOrder: 'newest',
+      timelineKind: 'all',
+      openEvents: [],
+      expanded: null,
+      query: '',
+      hits: [],
+      searched: null,
+      verify: null,
+      verifying: false,
+    }
+    const found = nodes(draw(FAKE, view, act, { width: 100, rows: 30, now: Date.now(), offset: 0 }))
+    for (const [name, hotkey] of [['now', 'n'], ['decisions', 'e'], ['links', 'l'], ['timeline', 't'], ['spec', 'p']] as const) {
+      const button = found.find(one => one.props.key === `strip-${name}`)
+      expect(button?.props.hotkey).toBe(hotkey)
+      ;(button?.props.onPress as () => void)()
+      expect(calls.pop()).toEqual(['jump', [`section-${name}`]])
+      // The anchor the strip scrolls to is drawn, keyed the same.
+      expect(found.some(one => one.type === 'Box' && one.props.key === `section-${name}`)).toBe(true)
+    }
+  })
+
+  test('Now: the claim in words in the error colour once the lease ended, the next step, the stop, the recommended option and the blocker as a row', async ($, on) => {
+    await openL1($, on)
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+
+    const claim = await ui.find({ type: 'Text', text: /^claimed by / })
+    expect(claim?.text).toMatch(/^claimed by seat-1 · lease ended \d+[smhd] ago$/)
+    expect(claim?.props.color).toBe('error')
+    const ended = await ui.find({ type: 'Text', text: /^lease ended; / })
+    expect(ended?.text).toBe('lease ended; a takeover may claim it')
+    expect(ended?.props.color).toBe('error')
+    expect((await ui.find({ type: 'Text', text: /^Review round 1\.$/ }))?.text).toBe('Review round 1.')
+    expect((await ui.find({ key: 'stop-none' }))?.text).toContain('none recorded')
+    const options = await ui.find({ key: 'options' })
+    expect(options?.text).toContain('B) Wait — wait a week  ◀ recommended')
+    expect(options?.text).not.toContain('A) Ship — ship now  ◀')
+    // The blocker is a pressable row with the item's glyph, id and title from the list the pane holds.
+    const blocker = await ui.find({ key: 'blocker-0' })
+    expect(blocker?.text).toContain('● A1')
+    expect(blocker?.text).toContain('title of A1')
+    await ui.unmount()
+  })
+
+  test('Now: a lease still running is in words, in the claim colour', async ($, on) => {
+    await openL1($, on, loopReply(loopLog([], FAR_FUTURE)))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    const claim = await ui.find({ type: 'Text', text: /^claimed by / })
+    expect(claim?.text).toMatch(/^claimed by seat-1 · lease ends in \d+d$/)
+    expect(claim?.props.color).toBe('warning')
+    expect(await ui.find({ type: 'Text', text: /^lease ended; / })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('Decisions and Links print their placeholders and their empty lines instead of an empty section', async ($, on) => {
+    await openL1($, on, loopReply(ok({ completeness: { events_on_item: 1, events_returned: 1, events_decayed: 0 }, events: [stamped(1, 'item.created', { type: 'ticket', title: 't' }, '2026-10-28T12:00:00Z')] })))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: 'decisions-none' }))?.text).toBe('no decisions on this item')
+    expect((await ui.find({ key: 'tagged-here' }))?.text).toContain('LP6-3')
+    expect((await ui.find({ key: 'links-none' }))?.text).toContain('ledger link L1 --rel pr --target <url>')
+    expect((await ui.find({ key: 'links-in' }))?.text).toContain('related items need ledger links (LP6-3)')
+    expect((await ui.find({ key: 'links-docs' }))?.text).toContain('documents land with LC5')
+    expect((await ui.find({ key: 'spec-none' }))?.text).toBe('no spec recorded')
+    await ui.unmount()
+  })
+
+  test('an election quoting an utterance the pane cannot fetch says so, and a grant election shows its grant id', async ($, on) => {
+    const log = loopLog([
+      stamped(30, 'decision.elected', { question: 'Grant?', chosen: 'yes', question_id: 'grant:g7', quote_ref: 20516, quotes: ['go ahead'], asked_event_id: 3 }, '2026-10-30T14:00:00Z'),
+    ])
+    await openL1($, on, loopReply(log))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    const election = await ui.find({ key: 'election-30' })
+    expect(election?.text).toContain('grant:g7')
+    expect(election?.text).toContain('on these words: #20516 (not on this item; needs events --id, LP6-5) "go ahead"')
+    expect((await ui.find({ key: 'answered-3' }))?.text).toContain('Ship it? → yes')
+    await ui.unmount()
+  })
+
+  test('the timeline groups by day, folds a loop step into one row with its round and elapsed time, and expands by event id', async ($, on) => {
+    await openL1($, on)
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+
+    const days = await ui.findAll({ type: 'Text', text: /^(Oct \d+) · \d+ events?$/ })
+    expect(days.map(one => one.text)).toEqual(['Oct 30 · 6 events', 'Oct 28 · 3 events'])
+    const build = await ui.find({ key: 'event-row-11' })
+    expect(build?.text).toContain('build r1 → PR #133')
+    expect(build?.text).toContain('· 17m')
+    expect((await ui.find({ key: 'event-row-13' }))?.text).toContain('review r1 on 3c0d5aa → changes')
+    // The folded intents have no rows of their own.
+    expect(await ui.find({ key: 'event-row-10' })).toBe(undefined)
+    expect(await ui.find({ key: 'event-row-12' })).toBe(undefined)
+    expect(await ui.find({ key: 'event-detail-11' })).toBe(undefined)
+
+    await ui.press({ key: 'event-row-11' })
+    const detail = await ui.find({ key: 'event-detail-11' })
+    // Both events behind the folded row, each with its provenance.
+    expect(detail?.text).toContain('#10 loop.intent')
+    expect(detail?.text).toContain('#11 loop.done')
+    expect(detail?.text).toContain('session sess-1')
+    expect(detail?.text).toContain('key key-11')
+    expect(detail?.text).toContain('hash hash-11')
+    expect(detail?.text).toContain('model model-x')
+    expect((await ui.findAll({ type: 'Code' })).map(one => String(one.props.source)).some(source => source.includes('"intent_event_id": 10'))).toBe(true)
+
+    // The expansion is keyed by event id, so a re-read keeps it.
+    await ui.press({ key: 'refresh' })
+    expect(await ui.find({ key: 'event-detail-11' })).toBeDefined()
+    await ui.press({ key: 'event-row-11' })
+    expect(await ui.find({ key: 'event-detail-11' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('event rows carry no hotkeys, so dozens of ids never arm a letter', async ($, on) => {
+    await openL1($, on)
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    const rows = (await ui.findAll({ type: 'Button' })).filter(one => (one.key ?? '').startsWith('event-row-'))
+    expect(rows.length).toBeGreaterThan(5)
+    for (const row of rows) expect(row.props.hotkey).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('the kind filter narrows the timeline, and the order toggle reverses it', async ($, on) => {
+    await openL1($, on)
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    const keys = async () => (await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').filter(key => key.startsWith('event-row-'))
+
+    expect((await keys())[0]).toBe('event-row-15')
+    await ui.press({ key: 'timeline-order' })
+    expect((await keys())[0]).toBe('event-row-1')
+    await ui.press({ key: 'timeline-order' })
+
+    await ui.select({ key: 'timeline-kind', value: 'loop' })
+    expect(await keys()).toEqual(['event-row-13', 'event-row-11'])
+    await ui.select({ key: 'timeline-kind', value: 'notes' })
+    expect(await keys()).toEqual(['event-row-14'])
+    await ui.select({ key: 'timeline-kind', value: 'decisions' })
+    expect(await keys()).toEqual(['event-row-3'])
+    await ui.select({ key: 'timeline-kind', value: 'provenance' })
+    expect(await keys()).toEqual([])
+    expect((await ui.find({ key: 'timeline-none' }))?.text).toBe('no provenance events on this item')
+    await ui.unmount()
+  })
+
+  test('past 40 rows the timeline draws the rows near the window in full and the rest as one line each, with no row dropped', async ($, on) => {
+    const many = Array.from({ length: 100 }, (_, index) => stamped(100 + index, 'item.note', { text: `note ${index}` }, '2026-10-29T12:00:00Z'))
+    await openL1($, on, loopReply(loopLog(many)))
+
+    const top = await $.ui.mount(paneAt(100, 0, 30))
+    await top.press({ key: 'refresh' })
+    // Newest first: the head of the list is in the window, the tail is placeholders.
+    expect(await top.find({ key: 'event-row-199' })).toBeDefined()
+    expect(await top.find({ key: 'event-row-100' })).toBe(undefined)
+    expect(await top.find({ key: 'event-100' })).toBeDefined()
+    // Every row is present, as a row or a placeholder: 100 notes plus the 7 rows of the other events.
+    const drawn = async (pane: typeof top) => (await pane.findAll({ type: 'Box' })).filter(one => /^event-\d+$/.test(one.key ?? '')).length
+    expect(await drawn(top)).toBe(100 + 7)
+    await top.unmount()
+
+    const down = await $.ui.mount(paneAt(100, 150, 30))
+    await down.press({ key: 'refresh' })
+    expect(await down.find({ key: 'event-row-199' })).toBe(undefined)
+    expect(await down.find({ key: 'event-199' })).toBeDefined()
+    const full = (await down.findAll({ type: 'Button' })).filter(one => (one.key ?? '').startsWith('event-row-')).length
+    expect(full).toBeGreaterThan(10)
+    expect(full).toBeLessThan(100)
+    expect(await drawn(down)).toBe(100 + 7)
+    await down.unmount()
+  })
+
+  test('a timeline of 40 rows or fewer is drawn whole', async ($, on) => {
+    await openL1($, on)
+    const ui = await $.ui.mount(paneAt(100, 500, 5))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.findAll({ type: 'Button' })).filter(one => (one.key ?? '').startsWith('event-row-')).length).toBe(7)
+    await ui.unmount()
+  })
+})
+
+describe('the item screen: navigation', () => {
+  const LIST_ITEMS = [row('A1', 'ticket', 'open', '2026-11-05T10:00:00Z'), row('L1', 'ticket', 'open', '2026-11-04T10:00:00Z'), row('C3', 'ticket', 'open', '2026-11-03T10:00:00Z')]
+
+  function listReply(argv: readonly string[]): Ran {
+    const verb = argv.find(word => (READ_VERBS as readonly string[]).includes(word))
+    if (verb === 'query') return ok({ items: LIST_ITEMS, limit: 5000, truncated: false })
+    if (verb === 'card' && argv.includes('C3')) return ok({ ...CARD, item_id: 'C3', title: 'title of C3' })
+    if (verb === 'export-item' && argv.includes('C3')) return ok({ completeness: { events_on_item: 0, events_returned: 0, events_decayed: 0 }, events: [] })
+    return loopReply()(argv)
+  }
+
+  test('previous and next step through the list the item was opened from, and stop at its ends', async ($, on) => {
+    const seen: string[][] = []
+    engine(on, seen, listReply)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('items'))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    await ui.press({ key: 'row-L1' })
+
+    expect((await ui.find({ key: 'prev-item' }))?.props.hotkey).toBe('a')
+    expect((await ui.find({ key: 'next-item' }))?.props.hotkey).toBe('f')
+    await ui.press({ key: 'next-item' })
+    expect((await ui.find({ type: 'Text', text: /^C3$/ }))?.text).toBe('C3')
+    // At the end of the list there is nothing further.
+    expect(await ui.find({ key: 'next-item' })).toBe(undefined)
+    await ui.press({ key: 'prev-item' })
+    await ui.press({ key: 'prev-item' })
+    expect((await ui.find({ type: 'Text', text: /^A1$/ }))?.text).toBe('A1')
+    expect(await ui.find({ key: 'prev-item' })).toBe(undefined)
+    // Stepping is not opening: the history stays empty.
+    expect(await ui.find({ key: 'history' })).toBe(undefined)
+    // Everything the steps ran was a read.
+    for (const argv of seen) expect((READ_VERBS as readonly string[]).includes(argv[2] ?? '')).toBe(true)
+    await ui.unmount()
+  })
+
+  test('b goes back through the items opened from one another, and x leaves them all', async ($, on) => {
+    engine(on, [], listReply)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('items'))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    await ui.press({ key: 'row-L1' })
+    expect(await ui.find({ key: 'history' })).toBe(undefined)
+
+    // The blocker opens A1 from L1: L1 is left on the history.
+    await ui.press({ key: 'blocker-0' })
+    expect((await ui.find({ type: 'Text', text: /^A1$/ }))?.text).toBe('A1')
+    expect((await ui.find({ key: 'history' }))?.props.hotkey).toBe('b')
+    await ui.press({ key: 'history' })
+    expect((await ui.find({ type: 'Text', text: /^L1$/ }))?.text).toBe('L1')
+    expect(await ui.find({ key: 'history' })).toBe(undefined)
+
+    await ui.press({ key: 'blocker-0' })
+    await ui.press({ key: 'back' })
+    expect((await ui.find({ key: 'row-L1' }))?.text).toContain('title of L1')
+    await ui.press({ key: 'row-L1' })
+    expect(await ui.find({ key: 'history' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('a command that opens an item starts a fresh history', async ($, on) => {
+    engine(on, [], listReply)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('items'))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    await ui.press({ key: 'row-L1' })
+    await ui.press({ key: 'blocker-0' })
+    expect(await ui.find({ key: 'history' })).toBeDefined()
+
+    await $.command.run(command('C3'))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ type: 'Text', text: /^C3$/ }))?.text).toBe('C3')
+    expect(await ui.find({ key: 'history' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('o takes the first PR link, else the first url; nothing is drawn with neither', async ($, on) => {
+    const copies: string[] = []
+    await openL1($, on, loopReply(), copies)
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    const open = await ui.find({ key: 'open-link' })
+    expect(open?.props).toMatchObject({ label: 'Copy PR link', hotkey: 'o' })
+    await ui.press({ key: 'open-link' })
+    expect(copies).toEqual(['https://github.com/o/r/pull/133'])
+    await ui.unmount()
+  })
+
+  test('with only a url link, o copies it; with none, the button is absent', async ($, on) => {
+    const copies: string[] = []
+    const log = ok({ completeness: { events_on_item: 1, events_returned: 1, events_decayed: 0 }, events: [stamped(1, 'item.linked', { rel: 'url', target: 'notes/a.md' }, '2026-10-30T12:00:00Z')] })
+    await openL1($, on, loopReply(log), copies)
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: 'open-link' }))?.props.label).toBe('Copy url')
+    await ui.press({ key: 'open-link' })
+    expect(copies).toEqual(['notes/a.md'])
+    await ui.unmount()
+  })
+})
+
+describe('the item screen: width bands', () => {
+  test('narrow: the header stacks, the strip wraps, and a timeline row puts its summary on a second line', async ($, on) => {
+    await openL1($, on)
+    const ui = await $.ui.mount(paneAt(60))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: 'header' }))?.props.flexDirection).toBe('column')
+    expect((await ui.find({ key: 'strip' }))?.props.flexWrap).toBe('wrap')
+    const row = await ui.find({ key: 'event-row-11' })
+    expect(row?.text).toContain('#11')
+    expect(row?.text).not.toContain('build r1')
+    expect((await ui.find({ type: 'Text', text: /build r1 → PR #133/ }))?.text).toMatch(/^\s+build r1 → PR #133 · 17m$/)
+    await ui.unmount()
+  })
+
+  test('standard: one row per event, header on one line, no model column, minutes only', async ($, on) => {
+    await openL1($, on)
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: 'header' }))?.props.flexDirection).toBeUndefined()
+    const row = await ui.find({ key: 'event-row-11' })
+    expect(row?.text).toContain('build r1 → PR #133')
+    expect(row?.text).not.toContain('model-x')
+    expect(row?.text).toMatch(/\d\d:\d\d(?!:)/)
+    await ui.unmount()
+  })
+
+  test('wide: the model column and the time to the second; an expanded payload sits beside the provenance', async ($, on) => {
+    await openL1($, on)
+    const ui = await $.ui.mount(paneAt(130))
+    await ui.press({ key: 'refresh' })
+    const row = await ui.find({ key: 'event-row-11' })
+    expect(row?.text).toContain('model-x')
+    expect(row?.text).toMatch(/\d\d:\d\d:\d\d/)
+    await ui.press({ key: 'event-row-11' })
+    expect((await ui.find({ key: 'event-detail-11' }))?.props.flexDirection).toBe('row')
+    await ui.unmount()
+
+    // The expansion is the view's, so it is still open at the other width.
+    const standard = await $.ui.mount(paneAt(100))
+    await standard.press({ key: 'refresh' })
+    expect((await standard.find({ key: 'event-detail-11' }))?.props.flexDirection).toBe('column')
+    await standard.unmount()
+  })
+
+  test('a width outside the bands draws as the nearest band', async ($, on) => {
+    await openL1($, on)
+    const tiny = await $.ui.mount(paneAt(10))
+    await tiny.press({ key: 'refresh' })
+    expect((await tiny.find({ key: 'header' }))?.props.flexDirection).toBe('column')
+    await tiny.unmount()
+    const huge = await $.ui.mount(paneAt(900))
+    await huge.press({ key: 'refresh' })
+    expect((await huge.find({ key: 'event-row-11' }))?.text).toContain('model-x')
+    await huge.unmount()
+  })
+})
+
+describe('the item screen: stale and failed reads', () => {
+  test('a refused read keeps the last good detail, dimmed, with the age of the read it shows', async ($, on) => {
+    let refuse = false
+    await openL1($, on, argv => {
+      const verb = argv.find(word => (READ_VERBS as readonly string[]).includes(word))
+      if (refuse && argv.includes('L1') && verb === 'card') return refused('refused', 'the ledger is busy')
+      return loopReply()(argv)
+    })
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ type: 'Text', text: /^Review round 1\.$/ }))?.props.dimColor).toBeUndefined()
+    expect(await ui.find({ key: 'stale' })).toBe(undefined)
+
+    refuse = true
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ type: 'Text', text: /could not read L1/ }))?.props.color).toBe('error')
+    expect((await ui.find({ key: 'stale' }))?.text).toMatch(/^showing the read from (now|\d+[smhd]) ago$/)
+    const next = await ui.find({ type: 'Text', text: /^Review round 1\.$/ })
+    expect(next?.props.dimColor).toBe(true)
+    expect((await ui.find({ key: 'event-row-11' }))?.text).toContain('build r1')
+    await ui.unmount()
+  })
+
+  test('a read that refuses with the ledger moving says so in each section the events feed, and the rest stands', async ($, on) => {
+    await openL1($, on, loopReply(refused('moving', 'the ledger moved while reading')))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: 'events-failed' }))?.text).toContain('the ledger moved while reading; press r')
+    for (const name of ['stop', 'decisions', 'links', 'timeline', 'spec']) expect((await ui.find({ key: `${name}-unread` }))?.text).toContain('not shown: the events could not be read')
+    // The strip does not call an unread section empty.
+    expect((await ui.find({ key: 'strip-timeline' }))?.props.label).toBe('Timeline ?')
+    // The card's own sections stand.
+    expect((await ui.find({ type: 'Text', text: /^Review round 1\.$/ }))?.text).toBe('Review round 1.')
+    expect((await ui.find({ key: 'blocker-0' }))?.text).toContain('title of A1')
+    await ui.unmount()
+  })
+
+  test('an event with a kind or a payload the screen does not know draws as its one-line summary, never throws', async ($, on) => {
+    const log = ok({
+      completeness: { events_on_item: 3, events_returned: 3, events_decayed: 0 },
+      events: [
+        { id: 1, kind: 'future.kind', actor: null, harness: null, model: null, recorded_at: '2026-10-30T12:00:00Z', payload: 'not an object' },
+        { id: 2, kind: 'loop.done', actor: null, harness: null, model: null, recorded_at: 'garbled', payload: { intent_event_id: 'x' } },
+        { id: 3, kind: 'loop.intent', actor: null, harness: null, model: null, recorded_at: '2026-10-30T12:00:00Z' },
+      ],
+    })
+    await openL1($, on, loopReply(log))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect(await ui.find({ key: 'event-row-1' })).toBeDefined()
+    expect(await ui.find({ key: 'event-row-2' })).toBeDefined()
+    expect(await ui.find({ key: 'event-row-3' })).toBeDefined()
+    await ui.press({ key: 'event-row-1' })
+    expect(await ui.find({ key: 'event-detail-1' })).toBeDefined()
+    await ui.unmount()
+  })
 })
