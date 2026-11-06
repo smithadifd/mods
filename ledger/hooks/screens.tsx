@@ -83,6 +83,7 @@ export type Act = {
   setTimelineOrder: (order: TimelineOrder) => void
   setTimelineKind: (kind: string) => void
   toggleEvent: (eventId: number) => void
+  toggleSpec: (eventId: number) => void
   back: () => void
   listWith: (type: string, status: string) => void
   setType: (type: string) => void
@@ -862,7 +863,7 @@ function specSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame): Ren
       </Box>
     )
   }
-  const open = new Set(view.openEvents)
+  const open = new Set(view.openSpecs)
   const earlier = all.slice(1)
   return (
     <Box key="spec-section" flexDirection="column">
@@ -875,7 +876,7 @@ function specSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame): Ren
         {earlier.length > 0 && <Text dimColor>Earlier versions</Text>}
         {earlier.map(one => (
           <Box key={`spec-version-${one.eventId}`} flexDirection="column">
-            <Button key={`spec-version-row-${one.eventId}`} plain onPress={() => act.toggleEvent(one.eventId)}>
+            <Button key={`spec-version-row-${one.eventId}`} plain onPress={() => act.toggleSpec(one.eventId)}>
               <Text dimColor>{open.has(one.eventId) ? '▾ ' : '▸ '}{specLine(one)}</Text>
             </Button>
             {open.has(one.eventId) && (

@@ -746,6 +746,20 @@ describe('the item screen: strip, Now and the timeline', () => {
     await ui.unmount()
   })
 
+  test('opening an earlier spec version leaves the Timeline row closed, and the reverse', async ($, on) => {
+    await openL1($, on, loopReply(specLog()))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    await ui.press({ key: 'spec-version-row-21' })
+    expect(await ui.find({ key: 'spec-version-21-text-body-md' })).toBeDefined()
+    expect(await ui.find({ key: 'event-detail-21' })).toBe(undefined)
+    await ui.press({ key: 'spec-version-row-21' })
+    await ui.press({ key: 'event-row-20' })
+    expect(await ui.find({ key: 'event-detail-20' })).toBeDefined()
+    expect(await ui.find({ key: 'spec-version-20-text-body-md' })).toBe(undefined)
+    await ui.unmount()
+  })
+
   test('the Spec section says nothing moved when the claim was taken against the current version', async ($, on) => {
     await openL1($, on, loopReply(specLog(3)))
     const ui = await $.ui.mount(paneAt(100))
@@ -811,6 +825,7 @@ describe('the item screen: strip, Now and the timeline', () => {
       timelineOrder: 'newest',
       timelineKind: 'all',
       openEvents: [],
+      openSpecs: [],
       expanded: null,
       query: '',
       hits: [],

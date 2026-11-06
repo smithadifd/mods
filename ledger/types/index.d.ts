@@ -218,6 +218,8 @@ export type View = {
   timelineKind: string
   /** Timeline rows expanded, by event id, so a re-read keeps them open. */
   openEvents: number[]
+  /** Earlier spec versions expanded in the Spec section, by event id; kept apart from the Timeline's rows. */
+  openSpecs: number[]
   expanded: number | null
   query: string
   hits: Hit[]

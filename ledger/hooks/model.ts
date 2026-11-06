@@ -560,10 +560,18 @@ export function specMoved(events: readonly Event[]): boolean {
   const states = oldestFirstEvents(events).filter(one => one.kind === 'item.state')
   const latest = states[states.length - 1]
   if (latest === undefined) return false
-  const p = payloadOf(latest)
-  if (text(p.status) !== 'claimed') return false
-  const built = whole(p.spec_version)
-  return built !== null && built < current.version
+  const holderOf = (p: Record<string, unknown>): string => text(p.owner) || text(p.claim)
+  const holder = holderOf(payloadOf(latest))
+  if (text(payloadOf(latest).status) !== 'claimed' || holder === '') return false
+  // Walk back through the holder's unbroken run of claims to the newest stamped version: a
+  // hand-off or restamp rewrites the claim without one, and it is the same claim.
+  for (let i = states.length - 1; i >= 0; i--) {
+    const p = payloadOf(states[i] as Event)
+    if (text(p.status) !== 'claimed' || holderOf(p) !== holder) return false
+    const built = whole(p.spec_version)
+    if (built !== null) return built < current.version
+  }
+  return false
 }
 
 /** `v2 · Nov 3 · size S · #51`: one earlier version in one line. */
