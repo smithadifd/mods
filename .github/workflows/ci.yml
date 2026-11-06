@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Install Claude Code
+        # The version the mods are built and tested against; bump it with them.
+        run: npm install -g @anthropic-ai/claude-code@2.1.318
+      - name: Validate the marketplace
+        run: claude plugin validate --strict .
+      - name: Validate and test each mod
+        # Every mod the marketplace lists. The type-check (tsc -p <mod>) runs on
+        # a developer's machine: the declarations it needs are written beside a
+        # mod only by an interactive session, so a runner has none to check
+        # against.
+        run: |
+          set -euo pipefail
+          for mod in $(jq -r '.plugins[].source' .claude-plugin/marketplace.json); do
+            echo "== $mod"
+            claude plugin validate --strict "$mod"
+            claude plugin test "$mod"
+          done

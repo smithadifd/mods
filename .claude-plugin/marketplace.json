@@ -1,0 +1,16 @@
+{
+  "name": "mods",
+  "owner": {
+    "name": "Andrew Smith"
+  },
+  "plugins": [
+    {
+      "name": "ledger",
+      "source": "./ledger",
+      "description": "A /ledger pane over an append-only item ledger: what needs you, what is moving, and what was decided on which words. Reads through the ledger CLI only and never writes an event."
+    }
+  ],
+  "metadata": {
+    "description": "Claude Code mods: panes beside the chat that draw what a person needs to see while agents work."
+  }
+}

@@ -1,0 +1,4 @@
+# The engine writes a mod's type declarations beside it when a session loads it.
+.claude-plugin/types/
+.DS_Store
+node_modules/

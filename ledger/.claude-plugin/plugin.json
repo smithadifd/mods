@@ -1,0 +1,35 @@
+{
+  "name": "ledger",
+  "version": "0.1.0",
+  "description": "A /ledger pane over an append-only item ledger: what needs you, what is moving, and what was decided on which words. Reads through the ledger CLI only and never writes an event.",
+  "author": {
+    "name": "Andrew"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "command": {
+      "type": "string",
+      "title": "Ledger command",
+      "description": "How to run the ledger CLI: `ledger` when it is on PATH, or `python3 -m ledger` with the folder below set.",
+      "default": "ledger"
+    },
+    "folder": {
+      "type": "string",
+      "title": "Ledger folder",
+      "description": "The working directory for the command, for `python3 -m ledger` from a clone or a vendored copy. Empty runs it from the session's own directory.",
+      "default": ""
+    },
+    "db": {
+      "type": "string",
+      "title": "Database",
+      "description": "The ledger database path. Empty uses LEDGER_DB from the environment.",
+      "default": ""
+    },
+    "refreshSeconds": {
+      "type": "number",
+      "title": "Refresh every (seconds)",
+      "description": "How often the open pane re-reads the ledger. 0 reads only on open and on Refresh.",
+      "default": 60
+    }
+  }
+}
