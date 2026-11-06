@@ -69,6 +69,8 @@ describe('counts and bars', () => {
     expect(segments({ open: 129, claimed: 3, blocked: 15, closed: 136 }, 36).find(one => one.status === 'claimed')?.cells).toBe(1)
     expect(segments({ open: 1, claimed: 0, blocked: 0, closed: 0 }, 10)).toEqual([{ status: 'open', cells: 10 }])
     expect(segments({ open: 0, claimed: 0, blocked: 0, closed: 0 }, 10)).toEqual([])
+    expect(segments({ open: 100, claimed: 1, blocked: 1, closed: 1 }, 8).reduce((sum, one) => sum + one.cells, 0)).toBe(8)
+    expect(segments({ open: 100, claimed: 1, blocked: 1, closed: 1 }, 8).find(one => one.status === 'open')?.cells).toBe(5)
     expect(segments({ open: 5, claimed: 5, blocked: 5, closed: 5 }, 2)).toEqual([
       { status: 'open', cells: 1 },
       { status: 'claimed', cells: 1 },
@@ -154,12 +156,15 @@ describe('lists', () => {
     expect(pageOf([1, 2, 3], 5, 2)).toEqual([])
   })
 
-  test('needs-you lists open decisions oldest first, then blocked and claimed', () => {
+  test('needs-you lists open decisions oldest first, then blocked and claimed; a claim past its lease is expired, not held', () => {
     const found = needsYou(items, { path: '', schemaVersion: 9, search: { status: 'current', behind: 0 }, expiredClaims: [{ itemId: 'z', holder: 'h', expiresAt: '' }] })
     expect(found.decisions.map(one => one.id)).toEqual(['f', 'd'])
     expect(found.blocked.map(one => one.id)).toEqual(['c'])
     expect(found.claimed.map(one => one.id)).toEqual(['e'])
     expect(found.expired.length).toBe(1)
+    const lapsed = needsYou(items, { path: '', schemaVersion: 9, search: { status: 'current', behind: 0 }, expiredClaims: [{ itemId: 'e', holder: 'h', expiresAt: '' }] })
+    expect(lapsed.claimed).toEqual([])
+    expect(lapsed.expired.map(one => one.itemId)).toEqual(['e'])
     expect(needsYou(items, null).expired).toEqual([])
   })
 

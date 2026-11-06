@@ -87,14 +87,16 @@ function idWidthOf(ids: readonly string[]): number {
   return Math.min(16, Math.max(6, ...ids.map(id => id.length)))
 }
 
-/** The whole pane: tabs, then the screen in view. */
+/** The whole pane: tabs, then the screen in view; with no database, the quick start alone, never stale rows beneath it. */
 export function draw(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
   const { Box, Text } = ui
+  const quick = view.error !== null && isQuickStart(view.error)
   return (
     <Box flexDirection="column">
       {tabs(ui, view, act, frame)}
-      {view.error !== null && isQuickStart(view.error) ? quickStart(ui, view) : view.error !== null && <Text color="error">{view.error}</Text>}
-      {screen(ui, view, act, frame)}
+      {quick && quickStart(ui, view)}
+      {!quick && view.error !== null && <Text color="error">{view.error}</Text>}
+      {!quick && screen(ui, view, act, frame)}
     </Box>
   )
 }

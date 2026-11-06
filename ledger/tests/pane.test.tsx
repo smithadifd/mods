@@ -276,8 +276,24 @@ describe('the ledger pane', () => {
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     await ui.press({ key: 'refresh' })
     expect(seen.some(argv => argv.includes('card') && argv.includes('ZZ-9'))).toBe(true)
+    expect(seen.find(argv => argv.includes('card'))?.slice(-2)).toEqual(['--', 'ZZ-9'])
+    expect(seen.find(argv => argv.includes('export-item'))?.slice(-2)).toEqual(['--', 'ZZ-9'])
     expect(seen.some(argv => argv.includes('search') && argv.includes('ZZ-9'))).toBe(true)
     expect((await ui.find({ key: 'query' }))?.props.value).toBe('ZZ-9')
+    await ui.unmount()
+  })
+
+  test('search words follow a --, so a word that starts with a dash is never read as a flag', async ($, on) => {
+    const seen: string[][] = []
+    engine(on, seen)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('search'))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'refresh' })
+    await ui.input({ key: 'query', text: '--db /elsewhere.db -x merge' })
+    const argv = seen.find(one => one.includes('search') && one.includes('-x'))
+    expect(argv).toBeDefined()
+    expect(argv!.slice(argv!.indexOf('--limit') + 2)).toEqual(['--', '--db', '/elsewhere.db', '-x', 'merge'])
     await ui.unmount()
   })
 
@@ -322,6 +338,21 @@ describe('the ledger pane', () => {
     expect((await ui.find({ type: 'Text', text: /No ledger database yet/ }))?.text).toBe('No ledger database yet')
     expect((await ui.find({ type: 'Code' }))?.props.language).toBe('sh')
     expect((await ui.findAll({ type: 'Text' })).filter(one => one.props.color === 'error')).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a database that disappears after a read shows the quick start alone, not stale rows', async ($, on) => {
+    let gone = false
+    engine(on, [], argv => (gone && argv.includes('doctor') ? refused('refused', 'database does not exist: /db/home.db') : answer(argv)))
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('items'))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'refresh' })
+    expect(await ui.find({ key: 'row-A1' })).toBeDefined()
+    gone = true
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ type: 'Text', text: /No ledger database yet/ }))?.text).toBe('No ledger database yet')
+    expect(await ui.find({ key: 'row-A1' })).toBe(undefined)
     await ui.unmount()
   })
 

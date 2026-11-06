@@ -162,12 +162,17 @@ export function segments(counts: Record<Status, number>, width: number): Segment
     cells[index]! += 1
     left -= 1
   }
-  for (const index of [...order].reverse()) {
-    if (left >= 0) break
-    if (cells[index]! > 1) {
-      cells[index]! -= 1
-      left += 1
+  while (left < 0) {
+    let shrunk = false
+    for (const index of [...order].reverse()) {
+      if (left >= 0) break
+      if (cells[index]! > 1) {
+        cells[index]! -= 1
+        left += 1
+        shrunk = true
+      }
     }
+    if (!shrunk) break
   }
   return present.map((status, index) => ({ status, cells: cells[index]! }))
 }
@@ -260,8 +265,10 @@ export type Needs = {
   expired: Doctor['expiredClaims']
 }
 
-/** What waits on a person: open decisions oldest first, blocked items, held claims, expired claims. */
+/** What waits on a person: open decisions oldest first, blocked items, held claims, expired claims. A claim past its lease is expired, not held. */
 export function needsYou(items: readonly Item[], doctor: Doctor | null): Needs {
+  const expired = doctor?.expiredClaims ?? []
+  const expiredIds = new Set(expired.map(one => one.itemId))
   return {
     decisions: oldestFirst(
       items.filter(one => one.type === 'decision' && one.status === 'open'),
@@ -272,10 +279,10 @@ export function needsYou(items: readonly Item[], doctor: Doctor | null): Needs {
       'updatedAt',
     ),
     claimed: oldestFirst(
-      items.filter(one => one.status === 'claimed'),
+      items.filter(one => one.status === 'claimed' && !expiredIds.has(one.id)),
       'updatedAt',
     ),
-    expired: doctor?.expiredClaims ?? [],
+    expired,
   }
 }
 

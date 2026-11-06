@@ -158,7 +158,7 @@ async function runSearch($: EngineInterface, cli: Cli, words: string): Promise<v
     return
   }
   try {
-    const data = await run($, cli, 'search', ['--limit', SEARCH_LIMIT, ...trimmed.split(/\s+/)])
+    const data = await run($, cli, 'search', ['--limit', SEARCH_LIMIT, '--', ...trimmed.split(/\s+/)])
     if (search !== searches) return
     await update($, view, current => ({ ...current, loading: false, hits: parseHits(data), searched: trimmed, error: null }))
   } catch (error) {
