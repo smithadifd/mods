@@ -1241,3 +1241,42 @@ describe('the item screen: stale and failed reads', () => {
     await ui.unmount()
   })
 })
+
+describe('a view stored by an earlier version', () => {
+  const stored = {
+    screen: 'item', isOpen: true, loading: false, error: null, loadedAt: null, doctor: null,
+    items: [], ready: [], decisions: [], typeFilter: 'all', statusFilter: 'all', standingFilter: 'all',
+    page: 0, itemId: 'L1', item: null, itemLoading: false, itemError: null, itemReadAt: null,
+    siblings: [], history: [], timelineOrder: 'newest', timelineKind: 'all', openEvents: [],
+    expanded: null, query: '', hits: [], searched: null, verify: null, verifying: false,
+  }
+  const VIEW = { plugin: 'ledger', key: 'view' } as const
+
+  async function openWith(shape: string, $: Parameters<TestBody>[0], on: On) {
+    engine(on, [], loopReply())
+    // The engine's store answers the pane's read of its view with a value kept under `shape`.
+    on('state.get', VIEW, async (_, e, next) => {
+      const real = await next(e)
+      // Until the pane writes its own view, the store holds the seeded one.
+      if (real.value?.value !== undefined) return real
+      return { value: { value: { shape, value: stored }, version: real.value?.version ?? 0 } } as never
+    })
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    return ui
+  }
+
+  test('a value kept under the current tag is resumed on its item screen', async ($, on) => {
+    const ui = await openWith('view-4', $, on)
+    expect(await ui.find({ key: 'strip-now' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a value kept under the earlier view-3 tag is declined: the pane opens on its default view', async ($, on) => {
+    const ui = await openWith('view-3', $, on)
+    expect(await ui.find({ key: 'strip-now' })).toBe(undefined)
+    expect(await ui.find({ key: 'tile-ready' })).toBeDefined()
+    await ui.unmount()
+  })
+})
