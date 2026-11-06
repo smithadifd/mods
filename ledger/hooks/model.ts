@@ -803,13 +803,18 @@ export type Nav = { screen: Screen; itemId: string | null; history: string[]; si
 
 const HISTORY_LIMIT = 50
 
+/** The ids once each, in first-seen order: a list with one entry per record can name an item twice, and stepping by position would stick on the first copy. */
+export function uniqueIds(ids: readonly string[]): string[] {
+  return [...new Set(ids)]
+}
+
 /** Opening an item from another item pushes the one left onto the history; from a list it starts a fresh one and remembers the list. */
 export function navOpen(nav: Nav, id: string, siblings: readonly string[] | null): { history: string[]; siblings: string[] } {
   if (nav.screen === 'item' && nav.itemId !== null && nav.itemId !== id) {
-    return { history: [...nav.history, nav.itemId].slice(-HISTORY_LIMIT), siblings: siblings === null ? nav.siblings : [...siblings] }
+    return { history: [...nav.history, nav.itemId].slice(-HISTORY_LIMIT), siblings: siblings === null ? nav.siblings : uniqueIds(siblings) }
   }
-  if (nav.screen === 'item' && nav.itemId === id) return { history: nav.history, siblings: siblings === null ? nav.siblings : [...siblings] }
-  return { history: [], siblings: siblings === null ? [] : [...siblings] }
+  if (nav.screen === 'item' && nav.itemId === id) return { history: nav.history, siblings: siblings === null ? nav.siblings : uniqueIds(siblings) }
+  return { history: [], siblings: siblings === null ? [] : uniqueIds(siblings) }
 }
 
 /** The id `delta` places along the list the item was opened from, or `null` at either end or when it is not in the list. */

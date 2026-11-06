@@ -402,6 +402,27 @@ describe('the ledger pane', () => {
     await ui.unmount()
   })
 
+  test('an item with two decision records is stepped past, not reloaded', async ($, on) => {
+    const three = {
+      decisions: [
+        { ...DECISIONS.decisions[0]!, decision_event_id: 3, item_id: 'A1' },
+        { ...DECISIONS.decisions[0]!, decision_event_id: 2, item_id: 'A1' },
+        { ...DECISIONS.decisions[0]!, decision_event_id: 1, item_id: 'L1' },
+      ],
+    }
+    engine(on, [], argv => (argv.includes('decisions') ? ok(three) : loopReply()(argv)))
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('decisions'))
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.press({ key: 'refresh' })
+    await ui.press({ key: 'decision-row-2' })
+    await ui.press({ key: 'decision-open-2' })
+    expect((await ui.find({ type: 'Text', text: /^A1$/ }))?.text).toBe('A1')
+    await ui.press({ key: 'next-item' })
+    expect((await ui.find({ type: 'Text', text: /^L1$/ }))?.text).toBe('L1')
+    await ui.unmount()
+  })
+
   test('a command that cannot start is said plainly', async ($, on) => {
     mock.clock(on)
     on('command.register', () => ({ value: { command: 'ledger' } }))

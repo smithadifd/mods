@@ -571,6 +571,17 @@ describe('the strip, navigation, links and the ticket pass', () => {
     expect(navOpen({ ...onA, screen: 'search', history: ['Q'] }, 'B', ['B']).history).toEqual([])
   })
 
+  test('a list that names an item twice steps past it, not back onto it', () => {
+    const opened = navOpen({ screen: 'decisions', itemId: null, history: [], siblings: [] }, 'A1', ['A1', 'A1', 'L1', 'A1', 'L1'])
+    expect(opened.siblings).toEqual(['A1', 'L1'])
+    const nav: Nav = { screen: 'item', itemId: 'A1', history: [], siblings: opened.siblings }
+    expect(navStep(nav, 1)).toBe('L1')
+    expect(navStep({ ...nav, itemId: 'L1' }, -1)).toBe('A1')
+    // Opening a neighbour from inside an item dedupes the new list too.
+    expect(navOpen(nav, 'X', ['X', 'X', 'Y']).siblings).toEqual(['X', 'Y'])
+    expect(navOpen({ ...nav, itemId: 'A1' }, 'A1', ['B', 'B']).siblings).toEqual(['B'])
+  })
+
   test('the history is bounded', () => {
     const deep: Nav = { screen: 'item', itemId: 'N', history: Array.from({ length: 50 }, (_, index) => `h${index}`), siblings: [] }
     const next = navOpen(deep, 'M', null)
