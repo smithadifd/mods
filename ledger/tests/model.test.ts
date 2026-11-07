@@ -750,6 +750,27 @@ describe('sessions: the resume line and the item\'s distinct sessions', () => {
     for (const value of unusable) expect(resumeLine(value)).toBe(null)
   })
 
+  const injected = ['$(id)', '`id`', 'x;touch${IFS}/p', 'a|b', 'x&&id', 'a>b', "'q'", '"q"', '\\', '-r', '--resume', 'a'.repeat(129), 'sess\u00e9', '\u0441ess-1']
+
+  test('an id carrying shell syntax, a leading dash, more than 128 characters or non-ASCII gives no line', () => {
+    for (const value of injected) expect(resumeLine(value)).toBe(null)
+    expect(resumeLine('a'.repeat(128))).toBe(`claude --resume ${'a'.repeat(128)}`)
+  })
+
+  test('a real UUID and an id of letters, digits and . _ : - stay usable', () => {
+    expect(resumeLine('0b1f2c3d-aaaa-4bbb-8ccc-1234567890ab')).toBe('claude --resume 0b1f2c3d-aaaa-4bbb-8ccc-1234567890ab')
+    expect(resumeLine('abc.def:1-2_3')).toBe('claude --resume abc.def:1-2_3')
+  })
+
+  test('sessionsOf and sessionLinkLines offer no line for an injected id', () => {
+    const events = injected.flatMap((value, index) => [
+      withSession(index * 2 + 1, 'item.note', {}, value),
+      ev(index * 2 + 2, 'item.linked', { rel: 'session', target: value }),
+    ])
+    for (const row of sessionsOf(events)) expect(row.line).toBe(null)
+    for (const line of sessionLinkLines(events).values()) expect(line).toBe(null)
+  })
+
   test('sessions: envelopes and session links are deduplicated, the one named by the latest event first', () => {
     const rows = sessionsOf([
       withSession(1, 'item.created', {}, 'sess-a'),

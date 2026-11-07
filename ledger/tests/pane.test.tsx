@@ -1359,6 +1359,25 @@ describe('the item screen copies a resume line for each session it names', () =>
     await ui.unmount()
   })
 
+  test('an id carrying shell syntax, a leading dash, 129 characters or non-ASCII offers no copy at any sink', async ($, on) => {
+    const bad = ['$(id)', '`id`', 'x;touch${IFS}/p', 'a|b', 'x&&id', 'a>b', "'q'", '"q"', '\\', '-r', 'a'.repeat(129), 'sess\u00e9']
+    const events = [
+      { ...event(1, 'item.created', { type: 'initiative', title: 'title of X1' }) },
+      ...bad.map((value, index) => ({ ...event(index + 2, 'item.note', { text: 'n' }), session: value })),
+      ...bad.map((value, index) => event(index + 2 + bad.length, 'item.linked', { rel: 'session', target: value })),
+    ]
+    const copies: string[] = []
+    const ui = await open(ok({ completeness: { events_on_item: events.length, events_returned: events.length, events_decayed: 0 }, events }), copies, $, on)
+    for (let index = 0; index < bad.length; index++) await ui.press({ key: `event-row-${index + 2}` })
+    const buttons = (await ui.findAll({ type: 'Button' })).filter(one => (one.key ?? '').startsWith('copy-resume-'))
+    expect(buttons.length).toBe(0)
+    expect((await ui.find({ key: 'session-0' }))?.text).toContain('session id unusable')
+    expect((await ui.find({ key: 'provenance-session-2' }))?.text).toContain('session id unusable')
+    expect((await ui.find({ key: `link-session-unusable-${2 + bad.length}` }))?.text).toContain('session id unusable')
+    expect(copies).toEqual([])
+    await ui.unmount()
+  })
+
   test('the pane runs only the read verbs while it offers resume lines', async ($, on) => {
     const seen: string[][] = []
     const ui = await open(ok(SESSION_LOG), [], $, on, seen)

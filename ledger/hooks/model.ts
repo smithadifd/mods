@@ -413,12 +413,13 @@ export function linksOf(events: readonly Event[]): LinkRow[] {
 
 /* Sessions: the ids the item's events and links name, each with the line that resumes it. */
 
-/** A session id is usable only as a non-empty string with no whitespace and no control character. */
-const UNUSABLE_SESSION = /[\s\u0000-\u001f\u007f-\u009f]/
+/** A session id is usable only inside a fixed alphabet: it starts with a letter or digit (so it can never read as a flag) and continues with letters, digits and `.` `_` `:` `-`. */
+const USABLE_SESSION = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
+const SESSION_MAX = 128
 
-/** `claude --resume <session>` for a usable session id; null for anything else, so a malformed command line is never offered. */
+/** `claude --resume <session>` for a usable session id (at most 128 characters in the alphabet above); null for anything else, so no shell syntax or flag is ever offered as a command line. Every copy sink builds its line here. */
 export function resumeLine(session: unknown): string | null {
-  if (typeof session !== 'string' || session === '' || UNUSABLE_SESSION.test(session)) return null
+  if (typeof session !== 'string' || session.length > SESSION_MAX || !USABLE_SESSION.test(session)) return null
   return `claude --resume ${session}`
 }
 
