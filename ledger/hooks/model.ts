@@ -230,6 +230,95 @@ export function oldestFirst(items: readonly Item[], by: 'createdAt' | 'updatedAt
   return [...items].sort((a, b) => a[by].localeCompare(b[by]) || a.id.localeCompare(b.id, undefined, { numeric: true }))
 }
 
+/** The anchor an item names, or null: no `parent_id`, or one that names the item itself. */
+export function anchorOf(one: Item): string | null {
+  const parent = one.parentId
+  return typeof parent === 'string' && parent !== '' && parent !== one.id ? parent : null
+}
+
+/** An anchor's children, closed of total. `open` is the ledger's own `children_open` when the row carries it. */
+export type Rollup = { closed: number; open: number; total: number }
+
+/** The children of each anchor among `all`, in the order given. */
+function childrenByAnchor(all: readonly Item[]): Map<string, Item[]> {
+  const kids = new Map<string, Item[]>()
+  for (const one of all) {
+    const parent = anchorOf(one)
+    if (parent === null) continue
+    const list = kids.get(parent)
+    if (list === undefined) kids.set(parent, [one])
+    else list.push(one)
+  }
+  return kids
+}
+
+function rollupFor(anchor: Item | undefined, kids: readonly Item[]): Rollup | null {
+  const declared = anchor === undefined ? undefined : anchor.childrenOpen
+  const open = typeof declared === 'number' ? declared : kids.filter(one => one.status !== 'closed').length
+  const closed = kids.filter(one => one.status === 'closed').length
+  const total = open + closed
+  return total === 0 ? null : { closed, open, total }
+}
+
+/** The closed-of-total count of one anchor over every item the pane holds; null for an item with no children. */
+export function rollupOf(anchorId: string, all: readonly Item[]): Rollup | null {
+  return rollupFor(all.find(one => one.id === anchorId), childrenByAnchor(all).get(anchorId) ?? [])
+}
+
+/** The count as the pane writes it: `2 of 3`, closed of total. */
+export function rollupText(rollup: Rollup): string {
+  return `${rollup.closed} of ${rollup.total}`
+}
+
+/** An anchor's children, claimed first then open, blocked and closed, for the item detail. */
+export function childrenOf(anchorId: string, all: readonly Item[]): Item[] {
+  return sortItems(all.filter(one => anchorOf(one) === anchorId))
+}
+
+export type ListRow =
+  | { kind: 'item'; item: Item; depth: number; rollup: Rollup | null }
+  | { kind: 'fold'; anchorId: string; closed: number; depth: number }
+
+/**
+ * The Items list with each child under its anchor, indented, when the anchor is in the list too; a child whose anchor
+ * is not in the list stays where it sorts. Closed children are folded behind one `and N closed` row when
+ * `foldClosed` (not when the list is asking for closed items, which would hide it). Children follow the list's own
+ * order. Rows without `parent_id` come out as the list went in. `all` is every item the pane holds, so a count does
+ * not shrink with a filter.
+ */
+export function nestItems(list: readonly Item[], all: readonly Item[], foldClosed: boolean): ListRow[] {
+  const ids = new Set(list.map(one => one.id))
+  const everyKid = childrenByAnchor(all)
+  const byId = new Map(all.map(one => [one.id, one]))
+  const kids = new Map<string, Item[]>()
+  const roots: Item[] = []
+  for (const one of list) {
+    const parent = anchorOf(one)
+    if (parent !== null && ids.has(parent)) {
+      const here = kids.get(parent)
+      if (here === undefined) kids.set(parent, [one])
+      else here.push(one)
+    } else roots.push(one)
+  }
+
+  const out: ListRow[] = []
+  const seen = new Set<string>()
+  const visit = (one: Item, depth: number): void => {
+    seen.add(one.id)
+    out.push({ kind: 'item', item: one, depth, rollup: rollupFor(byId.get(one.id) ?? one, everyKid.get(one.id) ?? []) })
+    const children = (kids.get(one.id) ?? []).filter(each => !seen.has(each.id))
+    const shown = children.filter(each => !foldClosed || each.status !== 'closed' || (kids.get(each.id)?.length ?? 0) > 0)
+    for (const each of shown) visit(each, depth + 1)
+    const folded = children.filter(each => !shown.includes(each))
+    for (const each of folded) seen.add(each.id)
+    if (folded.length > 0) out.push({ kind: 'fold', anchorId: one.id, closed: folded.length, depth: depth + 1 })
+  }
+  for (const one of roots) visit(one, 0)
+  // A cycle among the rows has no root; show what was not reached, flat.
+  for (const one of list) if (!seen.has(one.id)) visit(one, 0)
+  return out
+}
+
 export const STATUS_FILTERS = ['all', 'ready', 'open', 'claimed', 'blocked', 'closed'] as const
 
 /** The items list under the two filters; `ready` is the ledger's own unblocked set. */

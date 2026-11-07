@@ -16,6 +16,7 @@ import {
   clockOf,
   countByStatus,
   countsByType,
+  childrenOf,
   cut,
   dailyTouches,
   dayGroups,
@@ -35,6 +36,7 @@ import {
   linksOf,
   navStep,
   needsYou,
+  nestItems,
   notesOf,
   optionsOf,
   pageCount,
@@ -43,6 +45,8 @@ import {
   recordsOf,
   resumeLine,
   reviewsOf,
+  rollupOf,
+  rollupText,
   segments,
   sessionLinkLines,
   sessionsOf,
@@ -346,14 +350,18 @@ function home(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
 }
 
 /** One pressable row: status dot, age, id, a dim detail, the title. */
-function itemRow(ui: Ui, one: Item, act: Act, frame: Frame, prefix: string, idWidth: number, detail: string, siblings?: readonly string[]): RenderElement {
+function itemRow(ui: Ui, one: Item, act: Act, frame: Frame, prefix: string, idWidth: number, detail: string, siblings?: readonly string[], nested?: { depth: number; count: string | null }): RenderElement {
   const { Button, Text } = ui
   const detailWidth = 10
-  const titleWidth = Math.max(10, frame.width - (2 + 5 + idWidth + 1 + detailWidth + 1) - 1)
+  const indent = nested === undefined ? '' : '  '.repeat(Math.min(nested.depth, 4))
+  const count = nested === undefined || nested.count === null ? '' : `${nested.count} `
+  const titleWidth = Math.max(10, frame.width - (2 + 5 + idWidth + 1 + detailWidth + 1) - 1 - indent.length - count.length)
   return (
     <Button key={`${prefix}-${one.id}`} plain onPress={() => act.openItem(one.id, siblings)}>
       <Text color={statusColor(one.status)}>{statusGlyph(one.status)}</Text> <Text dimColor>{fit(ageOf(one.updatedAt, frame.now), 4)}</Text>{' '}
-      {fit(one.id, idWidth)} <Text dimColor>{fit(detail, detailWidth)}</Text> {cut(one.title, titleWidth)}
+      {fit(one.id, idWidth)} <Text dimColor>{fit(detail, detailWidth)}</Text> {indent}
+      {count !== '' && <Text dimColor>{count}</Text>}
+      {cut(one.title, titleWidth)}
     </Button>
   )
 }
@@ -398,10 +406,13 @@ function items(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
   const { Box, Button, Select, Text } = ui
   const list = filterItems(view.items, view.ready, view.typeFilter, view.statusFilter)
   const size = Math.max(5, frame.rows - 7)
-  const pages = pageCount(list.length, size)
+  // Children sit under their anchor, so the list pages over these rows, not over the flat list.
+  const rows = nestItems(list, view.items, view.statusFilter !== 'closed')
+  const pages = pageCount(rows.length, size)
   const page = Math.min(view.page, pages - 1)
-  const shown = pageOf(list, page, size)
-  const idWidth = idWidthOf(shown.map(one => one.id))
+  const shown = pageOf(rows, page, size)
+  const idWidth = idWidthOf(shown.flatMap(row => (row.kind === 'item' ? [row.item.id] : [])))
+  const order = rows.flatMap(row => (row.kind === 'item' ? [row.item.id] : []))
   const types = typesOf(view.items)
   return (
     <Box flexDirection="column">
@@ -430,7 +441,16 @@ function items(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
         {pages > 1 && <Button key="prev" label="Prev" hotkey="k" onPress={() => act.page(-1)} />}
       </Box>
       {list.length === 0 && <Text dimColor>No items match.</Text>}
-      {shown.map(one => itemRow(ui, one, act, frame, 'row', idWidth, one.status === 'claimed' ? (one.claim ?? one.type) : one.type, list.map(each => each.id)))}
+      {shown.map(row =>
+        row.kind === 'fold' ? (
+          note(ui, `fold-${row.anchorId}`, `${'  '.repeat(Math.min(row.depth, 4))}and ${row.closed} closed`, { dimColor: true })
+        ) : (
+          itemRow(ui, row.item, act, frame, 'row', idWidth, row.item.status === 'claimed' ? (row.item.claim ?? row.item.type) : row.item.type, order, {
+            depth: row.depth,
+            count: row.rollup === null ? null : rollupText(row.rollup),
+          })
+        ),
+      )}
     </Box>
   )
 }
@@ -620,6 +640,26 @@ function nowSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, band:
       {blockerRows(ui, view, d, act, frame, band)}
       {section(ui, 'Duplicated by', d.duplicatedBy, 'duplicate', frame)}
       {section(ui, 'Progress', d.progress, 'progress', frame)}
+    </Box>
+  )
+}
+
+/** The children of the open item, between Now and Decisions: nothing is drawn for an item with none. */
+function childrenSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, band: Band): RenderElement | false {
+  const { Box, Button, Text } = ui
+  const kids = childrenOf(d.id, view.items)
+  const rollup = rollupOf(d.id, view.items)
+  if (kids.length === 0 || rollup === null) return false
+  const idWidth = idWidthOf(kids.map(one => one.id))
+  return (
+    <Box key="children" flexDirection="column">
+      {sectionHeader(ui, 'Children', rollupText(rollup), `${SECTION_KEY_PREFIX}children`)}
+      {kids.map(one => (
+        <Button key={`child-${one.id}`} plain onPress={() => act.openItem(one.id)}>
+          <Text color={statusColor(one.status)}>{statusGlyph(one.status)}</Text> {fit(one.id, idWidth)}{' '}
+          <Text dimColor>{fit(one.claim ?? '—', 10)}</Text> {cut(one.title, Math.max(10, frame.width - idWidth - (band === 'narrow' ? 18 : 20)))}
+        </Button>
+      ))}
     </Box>
   )
 }
@@ -1084,7 +1124,7 @@ function item(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
   const open = firstOpenable(links)
   let leading = 0
   if (d !== null) {
-    leading = 14 + 6 * d.questions.length + d.blockers.length + (d.eventsError === null ? electionsOf(d.events).length * 4 + recordsOf(d.events).length * 5 + links.length + 6 : 0)
+    leading = 14 + childrenOf(d.id, view.items).length + 6 * d.questions.length + d.blockers.length + (d.eventsError === null ? electionsOf(d.events).length * 4 + recordsOf(d.events).length * 5 + links.length + 6 : 0)
   }
   return (
     <Box flexDirection="column">
@@ -1107,6 +1147,7 @@ function item(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
           {d.eventsError === null && headerLine(headerOf(d.events, d.status)) !== '' && <body.Text dimColor>{headerLine(headerOf(d.events, d.status))}</body.Text>}
           {nowSection(body, view, d, act, frame, band)}
           {d.eventsError !== null && eventsFailed(body, d)}
+          {childrenSection(body, view, d, act, frame, band)}
           {decisionsSection(body, d)}
           {linksSection(body, view, d, act, frame, band)}
           {timelineSection(body, view, d, act, frame, band, leading)}

@@ -1388,3 +1388,197 @@ describe('the item screen copies a resume line for each session it names', () =>
     await ui.unmount()
   })
 })
+
+describe('children under their anchor', () => {
+  /** A row as a ledger with `child-of` answers it: `parent_id` and `children_open` after the usual columns. */
+  function kin(id: string, status: string, updated: string, parent: string | null, childrenOpen: number, claim: string | null = null): Record<string, unknown> {
+    return { ...row(id, 'ticket', status, updated, updated, claim), parent_id: parent, children_open: childrenOpen }
+  }
+
+  const FAMILY = [
+    kin('P1', 'open', '2026-11-05T10:00:00Z', null, 1),
+    kin('K1', 'open', '2026-11-05T09:00:00Z', 'P1', 0, null),
+    kin('K2', 'closed', '2026-11-04T09:00:00Z', 'P1', 0),
+    kin('K3', 'closed', '2026-11-03T09:00:00Z', 'P1', 0),
+    kin('F1', 'open', '2026-11-02T10:00:00Z', null, 0),
+  ]
+
+  function familyReply(items: readonly Record<string, unknown>[]): (argv: readonly string[]) => Ran {
+    return argv => {
+      const verb = argv.find(word => (READ_VERBS as readonly string[]).includes(word))
+      if (verb === 'query') return ok({ items, limit: 5000, truncated: false })
+      return answer(argv)
+    }
+  }
+
+  async function itemsScreen($: Parameters<TestBody>[0], on: On, items: readonly Record<string, unknown>[], seen: string[][] = []) {
+    engine(on, seen, familyReply(items))
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('items'))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    return ui
+  }
+
+  test('an anchor carries closed of total, its open child sits indented under it, and its closed children fold behind one line', async ($, on) => {
+    const ui = await itemsScreen($, on, FAMILY)
+
+    const keys = (await ui.findAll({ type: 'Button', text: /title of/ })).map(one => one.key)
+    expect(keys).toEqual(['row-P1', 'row-K1', 'row-F1'])
+    expect((await ui.find({ key: 'row-P1' }))?.text).toContain('2 of 3')
+    // The open child is indented under its anchor and carries no count of its own.
+    expect((await ui.find({ key: 'row-K1' }))?.text).toMatch(/ticket {7}title of K1/)
+    expect((await ui.find({ key: 'row-K1' }))?.text).not.toMatch(/\d of \d/)
+    // The anchor and a flat row are not indented.
+    expect((await ui.find({ key: 'row-P1' }))?.text).toMatch(/ticket {5}2 of 3 title of P1/)
+    expect(await ui.find({ key: 'row-K2' })).toBe(undefined)
+    expect(await ui.find({ key: 'row-K3' })).toBe(undefined)
+    expect((await ui.find({ key: 'fold-P1' }))?.text).toContain('and 2 closed')
+    // A row with no children carries no count.
+    expect((await ui.find({ key: 'row-F1' }))?.text).toMatch(/ticket {5}title of F1/)
+    await ui.unmount()
+  })
+
+  test('an anchor whose children are all closed folds all of them behind one line', async ($, on) => {
+    const ui = await itemsScreen($, on, [
+      kin('P2', 'open', '2026-11-05T10:00:00Z', null, 0),
+      kin('K4', 'closed', '2026-11-04T09:00:00Z', 'P2', 0),
+      kin('K5', 'closed', '2026-11-03T09:00:00Z', 'P2', 0),
+      kin('K6', 'closed', '2026-11-02T09:00:00Z', 'P2', 0),
+    ])
+
+    expect((await ui.findAll({ type: 'Button', text: /title of/ })).map(one => one.key)).toEqual(['row-P2'])
+    expect((await ui.find({ key: 'row-P2' }))?.text).toContain('3 of 3')
+    expect((await ui.find({ key: 'fold-P2' }))?.text).toContain('and 3 closed')
+    await ui.unmount()
+  })
+
+  test('closed children are listed, not folded, when the list asks for closed items', async ($, on) => {
+    const ui = await itemsScreen($, on, [
+      ...FAMILY,
+      kin('PC', 'closed', '2026-11-01T10:00:00Z', null, 0),
+      kin('KC1', 'closed', '2026-10-31T10:00:00Z', 'PC', 0),
+      kin('KC2', 'closed', '2026-10-30T10:00:00Z', 'PC', 0),
+    ])
+    // With every status, the closed children are folded under the closed anchor.
+    expect(await ui.find({ key: 'fold-PC' })).not.toBe(undefined)
+    await ui.select({ key: 'status', value: 'closed' })
+
+    // Asking for closed items lists them, the anchor's two nested under it, with nothing folded.
+    expect((await ui.findAll({ type: 'Button', text: /title of/ })).map(one => one.key)).toEqual(['row-K2', 'row-K3', 'row-PC', 'row-KC1', 'row-KC2'])
+    expect(await ui.find({ key: 'fold-PC' })).toBe(undefined)
+    expect((await ui.find({ key: 'row-KC1' }))?.text).toMatch(/ticket {7}title of KC1/)
+    await ui.unmount()
+  })
+
+  test('a child whose anchor is not in the result renders flat, as it does today', async ($, on) => {
+    const ui = await itemsScreen($, on, [
+      kin('K7', 'open', '2026-11-05T10:00:00Z', 'GONE', 0),
+      kin('F2', 'open', '2026-11-04T10:00:00Z', null, 0),
+    ])
+
+    expect((await ui.findAll({ type: 'Button', text: /title of/ })).map(one => one.key)).toEqual(['row-K7', 'row-F2'])
+    expect((await ui.find({ key: 'row-K7' }))?.text).toMatch(/ticket {5}title of K7/)
+    expect(await ui.find({ key: 'fold-GONE' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('rows from an older ledger, without parent_id or children_open, render exactly as today', async ($, on) => {
+    const plain = [
+      row('A1', 'ticket', 'open', '2026-11-05T10:00:00Z'),
+      row('B2', 'ticket', 'blocked', '2026-11-01T10:00:00Z'),
+      row('C3', 'ticket', 'closed', '2026-11-04T10:00:00Z'),
+      row('E4', 'ticket', 'claimed', '2026-11-05T09:00:00Z', '2026-11-05T09:00:00Z', 'seat-1'),
+    ]
+    const ui = await itemsScreen($, on, plain)
+
+    expect((await ui.findAll({ type: 'Button', text: /title of/ })).map(one => one.key)).toEqual(['row-E4', 'row-A1', 'row-B2', 'row-C3'])
+    for (const one of await ui.findAll({ type: 'Button', text: /title of/ })) {
+      expect(one.text).not.toMatch(/\d of \d/)
+      expect(one.text).toMatch(/(ticket|seat-1) {4,5}title of/)
+    }
+    expect(await ui.find({ key: 'fold-A1' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('a malformed parent_id renders the row flat', async ($, on) => {
+    const ui = await itemsScreen($, on, [
+      { ...kin('P3', 'open', '2026-11-05T10:00:00Z', null, 0) },
+      { ...kin('K8', 'open', '2026-11-04T10:00:00Z', null, 0), parent_id: 7 },
+      { ...kin('K9', 'open', '2026-11-03T10:00:00Z', null, 0), parent_id: '' },
+      { ...kin('K10', 'open', '2026-11-02T10:00:00Z', 'K10', 0) },
+    ])
+
+    expect((await ui.findAll({ type: 'Button', text: /title of/ })).map(one => one.key)).toEqual(['row-P3', 'row-K8', 'row-K9', 'row-K10'])
+    await ui.unmount()
+  })
+
+  test('the detail lists every child, with the same count in its header, between Now and Decisions', async ($, on) => {
+    const items = [
+      ...FAMILY.map(one => (one.item_id === 'K1' ? { ...one, claim: 'seat-9', status: 'claimed' } : one)),
+    ]
+    const reply = (argv: readonly string[]): Ran => {
+      const verb = argv.find(word => (READ_VERBS as readonly string[]).includes(word))
+      if (verb === 'query') return ok({ items, limit: 5000, truncated: false })
+      if (argv.includes('P1') && verb === 'card') return ok({ ...CARD, item_id: 'P1', title: 'title of P1' })
+      if (argv.includes('P1') && verb === 'export-item') return ok(LOG)
+      return answer(argv)
+    }
+    engine(on, [], reply)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('P1'))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+
+    const header = await ui.find({ key: 'section-children' })
+    expect(header?.text).toContain('Children')
+    expect(header?.text).toContain('2 of 3')
+    for (const id of ['K1', 'K2', 'K3']) expect((await ui.find({ key: `child-${id}` }))?.text).toContain(`title of ${id}`)
+    expect((await ui.find({ key: 'child-K1' }))?.text).toContain('◆')
+    expect((await ui.find({ key: 'child-K1' }))?.text).toContain('seat-9')
+    expect((await ui.find({ key: 'child-K2' }))?.text).toContain('○')
+
+    // The order of the sections in the tree: Now, Children, Decisions.
+    const order = (await ui.findAll({ type: 'Box' })).map(one => one.key).filter(key => ['section-now', 'section-children', 'section-decisions'].includes(key ?? ''))
+    expect(order).toEqual(['section-now', 'section-children', 'section-decisions'])
+
+    // A child opens its own detail, which has no Children section.
+    await ui.press({ key: 'child-K2' })
+    expect(await ui.find({ key: 'section-children' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('the Links section still prints the child-of row as it prints every relation', async ($, on) => {
+    const log = {
+      completeness: { events_on_item: 2, events_returned: 2, events_decayed: 0 },
+      events: [
+        stamped(1, 'item.created', { type: 'ticket', title: 'title of K1' }, '2026-11-05T09:00:00Z'),
+        stamped(2, 'item.linked', { rel: 'child-of', target: 'P1' }, '2026-11-05T09:01:00Z'),
+      ],
+    }
+    const reply = (argv: readonly string[]): Ran => {
+      const verb = argv.find(word => (READ_VERBS as readonly string[]).includes(word))
+      if (verb === 'query') return ok({ items: FAMILY, limit: 5000, truncated: false })
+      if (argv.includes('K1') && verb === 'card') return ok({ ...CARD, item_id: 'K1', title: 'title of K1' })
+      if (argv.includes('K1') && verb === 'export-item') return ok(log)
+      return answer(argv)
+    }
+    engine(on, [], reply)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('K1'))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+
+    expect((await ui.find({ key: 'link-2-child-of' }))?.text).toContain('child-of')
+    await ui.unmount()
+  })
+
+  test('the pane still runs read verbs only while it nests children', async ($, on) => {
+    const seen: string[][] = []
+    const ui = await itemsScreen($, on, FAMILY, seen)
+    await ui.press({ key: 'row-P1' })
+    expect(seen.length).toBeGreaterThan(2)
+    for (const argv of seen) expect((READ_VERBS as readonly string[]).includes(argv[2] ?? '')).toBe(true)
+    await ui.unmount()
+  })
+})

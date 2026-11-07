@@ -110,6 +110,28 @@ describe('the parsers', () => {
     expect(parseItems(null)).toEqual([])
   })
 
+  test('items carry parent_id and children_open only when the row has them well-formed', () => {
+    const base = { type: 'ticket', title: 't', status: 'open', owner: null, claim: null, created_at: 'c', updated_at: 'u' }
+    const items = parseItems({
+      items: [
+        { ...base, item_id: 'P', parent_id: null, children_open: 2 },
+        { ...base, item_id: 'K', parent_id: 'P', children_open: 0 },
+        { ...base, item_id: 'B1', parent_id: 7, children_open: -1 },
+        { ...base, item_id: 'B2', parent_id: '', children_open: 1.5 },
+        { ...base, item_id: 'B3', children_open: '3' },
+      ],
+    })
+    expect(items.map(one => [one.id, one.parentId, one.childrenOpen])).toEqual([
+      ['P', undefined, 2],
+      ['K', 'P', 0],
+      ['B1', undefined, undefined],
+      ['B2', undefined, undefined],
+      ['B3', undefined, undefined],
+    ])
+    // A row from an older ledger gains no keys.
+    expect(Object.keys(parseItems({ items: [{ ...base, item_id: 'O' }] })[0]!)).not.toContain('parentId')
+  })
+
   test('doctor reads the path, schema, search state and expired claims', () => {
     const doctor = parseDoctor({
       path: '/db/home.db',

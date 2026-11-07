@@ -124,6 +124,11 @@ function item(row: Json): Item | null {
     claim: strOrNull(row.claim),
     createdAt: str(row.created_at),
     updatedAt: str(row.updated_at),
+    // Only when the row carries them: an older ledger's rows keep exactly the fields they had. A parent_id that is
+    // not a non-empty string, or a children_open that is not a non-negative whole number, is dropped, so the row
+    // renders flat.
+    ...(strOrNull(row.parent_id) !== null ? { parentId: strOrNull(row.parent_id) } : {}),
+    ...(typeof row.children_open === 'number' && Number.isInteger(row.children_open) && row.children_open >= 0 ? { childrenOpen: row.children_open } : {}),
   }
 }
 
