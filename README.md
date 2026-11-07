@@ -126,7 +126,7 @@ No hard-coded paths: options and the environment carry what differs between mach
 
 ## Status and roadmap
 
-`ledger` 0.1.0 (see [CHANGELOG.md](CHANGELOG.md)), built and tested on Claude Code 2.1.318. The hooks-module interface is in early access on current builds and may change between releases; a mod here is checked against the build CI names.
+`ledger` 0.2.0 (see [CHANGELOG.md](CHANGELOG.md)), built and tested on Claude Code 2.1.318. The hooks-module interface is in early access on current builds and may change between releases; a mod here is checked against the build CI names.
 
 In motion, in rough order:
 
