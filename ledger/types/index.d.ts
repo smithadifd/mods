@@ -65,6 +65,8 @@ export type Event = {
   harness: string | null
   model: string | null
   session: string | null
+  /** True when the envelope names a session that is not a non-empty string (a number, an empty string); `session` is then null. */
+  badSession?: boolean
   idempotencyKey: string
   hash: string
   recordedAt: string

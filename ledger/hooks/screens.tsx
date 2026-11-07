@@ -41,8 +41,11 @@ import {
   pageOf,
   prShort,
   recordsOf,
+  resumeLine,
   reviewsOf,
   segments,
+  sessionLinkLines,
+  sessionsOf,
   specLine,
   specMeta,
   specMoved,
@@ -505,6 +508,32 @@ function copyButton(ui: Ui, key: string, text: string, act: Act): RenderElement 
   return <Button key={key} label="Copy" onPress={() => act.copy(text)} />
 }
 
+/** Copies a resume line; the line is text handed to the engine's copy and nothing else. */
+function resumeButton(ui: Ui, key: string, line: string, act: Act): RenderElement {
+  const { Button } = ui
+  return <Button key={key} label="Copy resume line" onPress={() => act.copy(line)} />
+}
+
+/** The item's distinct sessions in Now, each with its own copy; one dim line when none is recorded. */
+function sessionRows(ui: Ui, d: Detail, act: Act): RenderElement {
+  const { Box, Text } = ui
+  if (d.eventsError !== null) return unread(ui, 'sessions-unread')
+  const sessions = sessionsOf(d.events)
+  if (sessions.length === 0) return note(ui, 'sessions-none', 'no sessions recorded', { dimColor: true })
+  return (
+    <Box key="sessions" flexDirection="column">
+      <Text dimColor>sessions {sessions.length}</Text>
+      {sessions.map((one, index) => (
+        <Box key={`session-${index}`} gap={1}>
+          {one.line !== null ? <Text>  {one.session}</Text> : <Text dimColor>  session id unusable</Text>}
+          {one.line !== null && resumeButton(ui, `copy-resume-session-${index}`, one.line, act)}
+          <Text dimColor>#{one.eventId}</Text>
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
 function stopRows(ui: Ui, d: Detail, act: Act): RenderElement {
   const { Box, Link, Text } = ui
   const stop = stopOf(d.events)
@@ -568,6 +597,7 @@ function nowSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, band:
         {d.nextStep !== '' ? <Text>{d.nextStep}</Text> : <Text dimColor>none recorded</Text>}
       </Box>
       {d.eventsError === null ? stopRows(ui, d, act) : unread(ui, 'stop-unread')}
+      {sessionRows(ui, d, act)}
       {d.claim !== null && note(ui, 'claim', `claimed by ${d.claim}${lease === null ? '' : ` · ${lease.text}`}`, { color: lease !== null && lease.ended ? 'error' : 'warning' })}
       {d.questions.length === 0 && note(ui, 'asks-none', 'asks   none open', { dimColor: true })}
       {d.questions.length > 0 && <Text dimColor>asks {d.questions.length} open</Text>}
@@ -682,6 +712,7 @@ function linksSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, ban
     )
   }
   const links = groupLinks(linksOf(d.events))
+  const sessionLines = sessionLinkLines(d.events)
   const known = new Map(view.items.map(one => [one.id, one]))
   return (
     <Box key="links" flexDirection="column">
@@ -705,6 +736,7 @@ function linksSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, ban
               <Text>{target}</Text>
             )}
             {one.copyText !== null && copyButton(ui, `copy-link-${one.eventId}`, one.copyText, act)}
+            {one.rel === 'session' && sessionLinkCopy(ui, one.eventId, sessionLines.get(one.eventId) ?? null, act)}
             <Text dimColor>#{one.eventId}</Text>
           </Box>
         )
@@ -715,13 +747,25 @@ function linksSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, ban
   )
 }
 
-function provenance(ui: Ui, event: Event): RenderElement {
+/** A session link's copy of its resume line, or the word that its target cannot be resumed. */
+function sessionLinkCopy(ui: Ui, eventId: number, line: string | null, act: Act): RenderElement {
+  if (line === null) return note(ui, `link-session-unusable-${eventId}`, 'session id unusable', { dimColor: true })
+  return resumeButton(ui, `copy-resume-link-${eventId}`, line, act)
+}
+
+function provenance(ui: Ui, event: Event, act: Act): RenderElement {
   const { Box, Text } = ui
   return (
     <Box key={`provenance-${event.id}`} flexDirection="column">
       <Text dimColor>#{event.id} {event.kind}</Text>
       <Text dimColor>  actor {event.actor ?? '—'} · harness {event.harness ?? '—'} · model {event.model ?? '—'}</Text>
-      <Text dimColor>  session {event.session ?? '—'}</Text>
+      {event.session === null && event.badSession !== true && <Text dimColor>  session —</Text>}
+      {(event.session !== null || event.badSession === true) && (
+        <Box key={`provenance-session-${event.id}`} gap={1}>
+          {resumeLine(event.session) === null ? <Text dimColor>  session id unusable</Text> : <Text dimColor>  session {event.session}</Text>}
+          {resumeLine(event.session) !== null && resumeButton(ui, `copy-resume-event-${event.id}`, resumeLine(event.session) ?? '', act)}
+        </Box>
+      )}
       <Text dimColor>  time {stampOf(event.recordedAt)}</Text>
       <Text dimColor>  key {event.idempotencyKey === '' ? '—' : event.idempotencyKey}</Text>
       <Text dimColor>  hash {event.hash === '' ? '—' : event.hash}</Text>
@@ -762,7 +806,7 @@ function timelineRow(ui: Ui, row: TimelineRow, open: boolean, act: Act, frame: F
               <Code key={`payload-${event.id}`} source={JSON.stringify(event.payload, null, 2)} language="json" />
             ))}
           </Box>
-          <Box flexDirection="column">{row.events.map(event => provenance(ui, event))}</Box>
+          <Box flexDirection="column">{row.events.map(event => provenance(ui, event, act))}</Box>
         </Box>
       )}
     </Box>
