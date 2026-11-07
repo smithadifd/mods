@@ -12,6 +12,10 @@ export type Item = {
   claim: string | null
   createdAt: string
   updatedAt: string
+  /** The id of the item's current anchor (`child-of`); absent from an older ledger's rows, null with no anchor. */
+  parentId?: string | null
+  /** How many of the item's children are not closed; absent from an older ledger's rows. */
+  childrenOpen?: number | null
 }
 
 /** What `ledger doctor` says about the database. */

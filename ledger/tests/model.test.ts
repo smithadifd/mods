@@ -9,6 +9,7 @@ import {
   clockOf,
   countByStatus,
   countsByType,
+  childrenOf,
   cut,
   dailyTouches,
   dayGroups,
@@ -16,6 +17,9 @@ import {
   electionsOf,
   filterDecisions,
   filterItems,
+  nestItems,
+  rollupOf,
+  rollupText,
   firstOpenable,
   fit,
   grantOf,
@@ -819,5 +823,63 @@ describe('sessions: the resume line and the item\'s distinct sessions', () => {
       withSession(5, 'item.note', {}, 'sess-a'),
     ])
     expect([...lines.entries()]).toEqual([[1, 'claude --resume sess-a'], [2, null], [3, null]])
+  })
+})
+
+describe('children under their anchor (model)', () => {
+  function kid(id: string, status: string, parentId: string | null | undefined, childrenOpen?: number): Item {
+    const base: Item = { id, type: 'ticket', title: `t ${id}`, status, owner: null, claim: null, createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-0' + (id.length % 9 + 1) + 'T00:00:00Z' }
+    return { ...base, ...(parentId === undefined ? {} : { parentId }), ...(childrenOpen === undefined ? {} : { childrenOpen }) }
+  }
+
+  const anchor = kid('P', 'open', null, 1)
+  const open1 = kid('K1', 'open', 'P', 0)
+  const closed1 = kid('K2', 'closed', 'P', 0)
+  const closed2 = kid('K3', 'closed', 'P', 0)
+
+  test('the rollup is closed of total, from the ledger\'s open count and the closed children held', () => {
+    expect(rollupOf('P', [anchor, open1, closed1, closed2])).toEqual({ closed: 2, open: 1, total: 3 })
+    expect(rollupText(rollupOf('P', [anchor, open1, closed1, closed2])!)).toBe('2 of 3')
+    // The count does not shrink when the list is filtered: it reads every item held.
+    expect(rollupOf('K1', [anchor, open1])).toBe(null)
+  })
+
+  test('a child is placed under its anchor, the open one listed and the closed ones folded', () => {
+    const list = [anchor, open1, closed1, closed2]
+    const rows = nestItems(list, list, true)
+    expect(rows.map(one => (one.kind === 'item' ? `${one.item.id}@${one.depth}` : `fold:${one.anchorId}:${one.closed}`))).toEqual(['P@0', 'K1@1', 'fold:P:2'])
+  })
+
+  test('an anchor whose children are all closed folds all of them', () => {
+    const list = [kid('P', 'open', null, 0), closed1, closed2]
+    expect(nestItems(list, list, true).map(one => (one.kind === 'item' ? one.item.id : `fold:${one.closed}`))).toEqual(['P', 'fold:2'])
+  })
+
+  test('without folding the closed children are listed under the anchor', () => {
+    const list = [anchor, open1, closed1]
+    expect(nestItems(list, list, false).map(one => (one.kind === 'item' ? `${one.item.id}@${one.depth}` : 'fold'))).toEqual(['P@0', 'K1@1', 'K2@1'])
+  })
+
+  test('a child with no anchor in the list stays flat, in the list\'s own order', () => {
+    const list = [open1, kid('F', 'open', null)]
+    expect(nestItems(list, list, true).map(one => (one.kind === 'item' ? `${one.item.id}@${one.depth}` : 'fold'))).toEqual(['K1@0', 'F@0'])
+  })
+
+  test('rows with no parent_id come out as they went in, with no count', () => {
+    const list = [kid('A', 'open', undefined), kid('B', 'closed', undefined)]
+    expect(nestItems(list, list, true)).toEqual([
+      { kind: 'item', item: list[0], depth: 0, rollup: null },
+      { kind: 'item', item: list[1], depth: 0, rollup: null },
+    ])
+  })
+
+  test('a cycle among the rows, which the ledger refuses, still shows every row once and never loops', () => {
+    const list = [kid('X', 'open', 'Y'), kid('Y', 'open', 'X'), kid('Z', 'open', 'Z')]
+    const ids = nestItems(list, list, true).map(one => (one.kind === 'item' ? one.item.id : '-'))
+    expect([...ids].sort()).toEqual(['X', 'Y', 'Z'])
+  })
+
+  test('childrenOf lists the children of one anchor, open first', () => {
+    expect(childrenOf('P', [anchor, closed1, open1, kid('Q', 'open', 'other')]).map(one => one.id)).toEqual(['K1', 'K2'])
   })
 })
