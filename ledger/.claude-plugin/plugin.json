@@ -1,6 +1,6 @@
 {
   "name": "ledger",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A /ledger pane over an append-only item ledger: what needs you, what is moving, and what was decided on which words. Reads through the ledger CLI only and never writes an event.",
   "author": {
     "name": "Andrew"
