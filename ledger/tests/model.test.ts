@@ -23,6 +23,7 @@ import {
   firstOpenable,
   fit,
   grantOf,
+  groupBySeat,
   groupLinks,
   headerLine,
   headerOf,
@@ -66,6 +67,7 @@ import {
   statusColor,
   statusGlyph,
   scrollArgs,
+  seatOf,
   windowOf,
 } from '../hooks/model'
 import type { Nav } from '../hooks/model'
@@ -228,6 +230,8 @@ describe('the command line', () => {
     expect(parseCommandArgs('')).toEqual({ screen: 'home' })
     expect(parseCommandArgs(' needs ')).toEqual({ screen: 'needs' })
     expect(parseCommandArgs('Decisions')).toEqual({ screen: 'decisions' })
+    expect(parseCommandArgs('seats')).toEqual({ screen: 'seats' })
+    expect(parseCommandArgs('By-Seat')).toEqual({ screen: 'seats' })
   })
 
   test('a status word lists items under it', () => {
@@ -881,5 +885,58 @@ describe('children under their anchor (model)', () => {
 
   test('childrenOf lists the children of one anchor, open first', () => {
     expect(childrenOf('P', [anchor, closed1, open1, kid('Q', 'open', 'other')]).map(one => one.id)).toEqual(['K1', 'K2'])
+  })
+
+  test('a row whose parent_id names itself, which the ledger refuses, is not its own child and has no count', () => {
+    const self = kid('S', 'open', 'S', 0)
+    expect(childrenOf('S', [self])).toEqual([])
+    expect(rollupOf('S', [self])).toBe(null)
+  })
+})
+
+describe('claimed items by seat (model)', () => {
+  function held(id: string, claim: unknown, status = 'claimed', updatedAt = '2026-11-06T11:00:00Z'): Item {
+    return { id, type: 'ticket', title: `t ${id}`, status, owner: null, claim: claim as string | null, createdAt: '2026-11-01T00:00:00Z', updatedAt }
+  }
+
+  test('two claim labels make two seats, in label order, each with exactly its own items, newest first', () => {
+    const grouped = groupBySeat([
+      held('B1', 'seat-b'),
+      held('A1', 'seat-a', 'claimed', '2026-11-06T09:00:00Z'),
+      held('A2', 'seat-a', 'claimed', '2026-11-06T10:00:00Z'),
+    ])
+    expect(grouped.seats).toEqual([
+      { seat: 'seat-a', items: [held('A2', 'seat-a', 'claimed', '2026-11-06T10:00:00Z'), held('A1', 'seat-a', 'claimed', '2026-11-06T09:00:00Z')] },
+      { seat: 'seat-b', items: [held('B1', 'seat-b')] },
+    ])
+    expect(grouped.unlabelled).toEqual([])
+  })
+
+  test('an item that is not claimed never sits under a seat, even when its row still names a claim', () => {
+    const grouped = groupBySeat([held('A1', 'seat-a'), held('O1', null, 'open'), held('O2', 'seat-a', 'open'), held('C1', 'seat-a', 'closed'), held('K1', 'seat-a', 'Claimed')])
+    expect(grouped.seats).toEqual([{ seat: 'seat-a', items: [held('A1', 'seat-a')] }])
+    expect(grouped.unlabelled).toEqual([])
+    for (const [id, status] of [['O2', 'open'], ['C1', 'closed'], ['K1', 'Claimed']]) expect(seatOf(held(id!, 'seat-a', status))).toBe(null)
+  })
+
+  test('a claimed item whose label is missing, empty, blank or not a string is kept apart, never dropped and never guessed into a seat', () => {
+    const near = [held('N1', null), held('N2', ''), held('N3', '   '), held('N4', 42), held('N5', { holder: 'seat-a' })]
+    const grouped = groupBySeat([held('A1', 'seat-a'), ...near])
+    expect(grouped.seats.map(group => [group.seat, group.items.map(one => one.id)])).toEqual([['seat-a', ['A1']]])
+    expect(grouped.unlabelled.map(one => one.id).sort()).toEqual(['N1', 'N2', 'N3', 'N4', 'N5'])
+    for (const one of near) expect(seatOf(one)).toBe(null)
+  })
+
+  test('the label is the key as the ledger reports it: a different case or a padded label is a different seat', () => {
+    const grouped = groupBySeat([held('A1', 'seat-a'), held('A2', 'Seat-A'), held('A3', ' seat-a')])
+    expect(grouped.seats.map(group => group.seat).sort()).toEqual([' seat-a', 'Seat-A', 'seat-a'].sort())
+    for (const group of grouped.seats) expect(group.items.length).toBe(1)
+  })
+
+  test('every claimed item lands in exactly one place', () => {
+    const items = [held('A1', 'seat-a'), held('B1', 'seat-b'), held('N1', null), held('O1', null, 'open')]
+    const grouped = groupBySeat(items)
+    const placed = [...grouped.seats.flatMap(group => group.items), ...grouped.unlabelled].map(one => one.id)
+    expect(placed.sort()).toEqual(['A1', 'B1', 'N1'])
   })
 })
