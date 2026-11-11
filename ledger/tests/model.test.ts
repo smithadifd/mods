@@ -14,6 +14,7 @@ import {
   dailyTouches,
   dayGroups,
   dayOf,
+  documentsOf,
   electionsOf,
   filterDecisions,
   filterItems,
@@ -614,7 +615,7 @@ describe('the strip, navigation, links and the ticket pass', () => {
 
   test('the strip counts what is there, shows a dash when empty and a question mark when the events were unread', () => {
     const none = stripOf([])
-    expect(none.map(entry => `${entry.label}:${entry.hotkey}:${entry.count}`)).toEqual(['Now:n:', 'Decisions:e:–', 'Links:l:–', 'Timeline:t:–', 'Spec:p:–'])
+    expect(none.map(entry => `${entry.label}:${entry.hotkey}:${entry.count}`)).toEqual(['Now:n:', 'Decisions:e:–', 'Links:l:–', 'Timeline:t:–', 'Spec:p:–', 'Documents:m:–'])
     const some = stripOf([
       ev(1, 'decision.elected', { question: 'q', chosen: 'c' }),
       ev(2, 'decision.recorded', { who: 'w', effect: 'e' }),
@@ -622,8 +623,8 @@ describe('the strip, navigation, links and the ticket pass', () => {
       ev(4, 'item.spec', { version: 1 }),
       ev(5, 'item.spec', { version: 2 }),
     ])
-    expect(some.map(entry => entry.count)).toEqual(['', '2', '1', '5', '2'])
-    expect(stripOf(null).map(entry => entry.count)).toEqual(['', '?', '?', '?', '?'])
+    expect(some.map(entry => entry.count)).toEqual(['', '2', '1', '5', '2', '–'])
+    expect(stripOf(null).map(entry => entry.count)).toEqual(['', '?', '?', '?', '?', '?'])
   })
 
   test('the ticket section is in the strip only when the item carries framed ticket notes', () => {
@@ -722,7 +723,7 @@ describe('the strip, navigation, links and the ticket pass', () => {
 
   test('nothing here throws on a payload that is not an object', () => {
     const odd = [{ ...ev(1, 'loop.done', {}), payload: null as never }, { ...ev(2, 'loop.intent', {}), payload: 'x' as never }, { ...ev(3, 'item.note', {}), payload: [] as never }, ev(4, 'decision.asked', {})]
-    expect(() => [timelineOf(odd, 'all', 'newest'), dayGroups(timelineOf(odd, 'all', 'oldest')), stripOf(odd), ticketRecordOf(odd), answeredAsksOf(odd), groupLinks(linksOf(odd))]).not.toThrow()
+    expect(() => [timelineOf(odd, 'all', 'newest'), dayGroups(timelineOf(odd, 'all', 'oldest')), stripOf(odd), ticketRecordOf(odd), documentsOf(odd), answeredAsksOf(odd), groupLinks(linksOf(odd))]).not.toThrow()
   })
 })
 

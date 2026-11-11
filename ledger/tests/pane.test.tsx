@@ -5,6 +5,7 @@ import type { View } from '../types'
 import { READ_VERBS, parseCard, parseEvents } from '../hooks/cli'
 import { draw } from '../hooks/screens'
 import { LEDGER_0_1_18_TICKET_EXPORT_STDOUT } from './ledger-0.1.18-ticket-export'
+import { LEDGER_0_1_20_DOCUMENTS_EXPORT_ITEM_STDOUT } from './ledger-0.1.20-documents'
 import type { Act, Ui } from '../hooks/screens'
 
 const PANE = {
@@ -703,13 +704,14 @@ describe('the item screen: strip, Now and the timeline', () => {
     const ui = await $.ui.mount(paneAt(100))
     await ui.press({ key: 'refresh' })
 
-    const entries = await Promise.all(['now', 'decisions', 'links', 'timeline', 'spec'].map(name => ui.find({ key: `strip-${name}` })))
+    const entries = await Promise.all(['now', 'decisions', 'links', 'timeline', 'spec', 'documents'].map(name => ui.find({ key: `strip-${name}` })))
     expect(entries.map(one => [one?.props.label, one?.props.hotkey])).toEqual([
       ['Now', 'n'],
       ['Decisions –', 'e'],
       ['Links 1', 'l'],
       ['Timeline 9', 't'],
       ['Spec –', 'p'],
+      ['Documents –', 'm'],
     ])
     expect(await ui.find({ key: 'strip-ticket' })).toBe(undefined)
     await ui.unmount()
@@ -922,7 +924,7 @@ describe('the item screen: strip, Now and the timeline', () => {
       verifying: false,
     }
     const found = nodes(draw(FAKE, view, act, { width: 100, rows: 30, now: Date.now(), offset: 0 }))
-    for (const [name, hotkey] of [['now', 'n'], ['decisions', 'e'], ['links', 'l'], ['timeline', 't'], ['spec', 'p']] as const) {
+    for (const [name, hotkey] of [['now', 'n'], ['decisions', 'e'], ['links', 'l'], ['timeline', 't'], ['spec', 'p'], ['documents', 'm']] as const) {
       const button = found.find(one => one.props.key === `strip-${name}`)
       expect(button?.props.hotkey).toBe(hotkey)
       ;(button?.props.onPress as () => void)()
@@ -974,7 +976,7 @@ describe('the item screen: strip, Now and the timeline', () => {
     expect((await ui.find({ key: 'tagged-here' }))?.text).toContain('LP6-3')
     expect((await ui.find({ key: 'links-none' }))?.text).toContain('ledger link L1 --rel pr --target <url>')
     expect((await ui.find({ key: 'links-in' }))?.text).toContain('related items need ledger links (LP6-3)')
-    expect((await ui.find({ key: 'links-docs' }))?.text).toContain('documents land with LC5')
+    expect((await ui.find({ key: 'links-docs' }))?.text).toBe('documents: listed under Documents (m)')
     expect((await ui.find({ key: 'spec-none' }))?.text).toBe('no spec recorded')
     await ui.unmount()
   })
@@ -1825,6 +1827,150 @@ describe('claimed items by seat', () => {
       expect(argv[0]).toBe('ledger')
       expect((READ_VERBS as readonly string[]).includes(argv[2] ?? '')).toBe(true)
       for (const write of ['new', 'note', 'state', 'claim', 'link', 'elect', 'append', 'restore']) expect(argv).not.toContain(write)
+    }
+    await ui.unmount()
+  })
+})
+
+/* The Documents section on the item screen, against a real ledger 0.1.20 export of an item with two documents. */
+
+describe('the item screen: Documents', () => {
+  const DOCS_EXPORT: Ran = { exitCode: 0, stdout: LEDGER_0_1_20_DOCUMENTS_EXPORT_ITEM_STDOUT, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+  const DOCS_RAW = (JSON.parse(LEDGER_0_1_20_DOCUMENTS_EXPORT_ITEM_STDOUT) as { data: { events: { id: number; kind: string; payload: Record<string, unknown> }[] } }).data.events.filter(one => one.kind === 'doc.attached')
+  const DOCS_B64 = DOCS_RAW.map(one => String(one.payload.content_b64))
+  const DOCS_SHA = DOCS_RAW.map(one => String(one.payload.sha256))
+  const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+  /** The test's own base64 decoder (the fixture's documents are ASCII text), to know which bytes must never be drawn. */
+  function decode(b64: string): string {
+    let bits = 0
+    let value = 0
+    let out = ''
+    for (const ch of b64.replace(/=+$/, '')) {
+      value = ((value << 6) | B64.indexOf(ch)) & 0xffffff
+      bits += 6
+      if (bits >= 8) {
+        bits -= 8
+        out += String.fromCharCode((value >> bits) & 0xff)
+      }
+    }
+    return out
+  }
+
+  /** The non-empty lines the captured documents' bytes decode to. */
+  const DOCS_DECODED = DOCS_B64.flatMap(b64 =>
+    decode(b64)
+      .split('\n')
+      .map(line => line.trim())
+      .filter(line => line !== ''),
+  )
+
+  test('the strip carries Documents on m, and the section lists both captured documents newest first, the override marked on the receipt only', async ($, on) => {
+    await openL1($, on, loopReply(DOCS_EXPORT))
+    const ui = await $.ui.mount(paneAt(160))
+    await ui.press({ key: 'refresh' })
+    expect(DOCS_DECODED[0]).toBe('# The brief')
+    expect((await ui.find({ key: 'strip-documents' }))?.props).toMatchObject({ label: 'Documents 2', hotkey: 'm' })
+    expect((await ui.find({ key: 'section-documents' }))?.text).toContain('Documents')
+    const receipt = (await ui.find({ key: 'document-3' }))?.text ?? ''
+    const brief = (await ui.find({ key: 'document-2' }))?.text ?? ''
+    // A row is a Box of Texts (line, marker, event id), which read back joined without the gap between them.
+    expect(receipt).toMatch(/^review-receipt · review-receipt · application\/octet-stream · 35 bytes · ff2a34781a28 · \w+ \d+ \d\d:\d\d · seat-a\/clicredential override#3$/)
+    expect(brief).toMatch(/^The brief · brief · text\/markdown · 42 bytes · d82b5d187c28 · \w+ \d+ \d\d:\d\d · seat-a\/cli#2$/)
+    // The marker is one Text, in the warning colour, on the receipt's row alone.
+    const markers = await ui.findAll({ type: 'Text', text: /^credential override$/ })
+    expect(markers).toHaveLength(1)
+    expect(markers[0]?.props.color).toBe('warning')
+    expect(brief).not.toContain('credential override')
+    // Newest first, and only the short digest: the whole sha256 is never in the section.
+    const section = (await ui.find({ key: 'documents' }))?.text ?? ''
+    expect(section.indexOf(receipt)).toBeGreaterThan(-1)
+    expect(section.indexOf(receipt)).toBeLessThan(section.indexOf(brief))
+    for (const sha of DOCS_SHA) expect(section).not.toContain(sha)
+    await ui.unmount()
+  })
+
+  test('an item with no documents shows the en dash count and no document rows', async ($, on) => {
+    await openL1($, on)
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: 'strip-documents' }))?.props).toMatchObject({ label: 'Documents –', hotkey: 'm' })
+    expect((await ui.find({ key: 'section-documents' }))?.text).toContain('–')
+    expect((await ui.find({ key: 'documents-none' }))?.text).toBe('no documents attached')
+    expect((await ui.findAll({ type: 'Box' })).filter(one => (one.key ?? '').startsWith('document-'))).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a document missing a field draws it as an en dash; an unreadable one is a row naming its event id; the rest of the screen stands', async ($, on) => {
+    const log = loopLog([
+      stamped(20, 'doc.attached', { role: 'brief', mime: 'text/plain', sha256: 'cd'.repeat(32), content_b64: 'YWJj' }, '2026-10-30T13:00:00Z'),
+      stamped(21, 'doc.attached', { role: 'retro', title: 'Retro', size: 5, mime: 'text/plain', sha256: 'NOT-HEX', content_b64: 'YWJj' }, '2026-10-30T13:01:00Z'),
+      stamped(22, 'doc.attached', 'not an object' as never, '2026-10-30T13:02:00Z'),
+      stamped(23, 'doc.attachment', { role: 'brief', sha256: 'cd'.repeat(32), size: 1, mime: 'text/plain', content_b64: 'YWJj' }, '2026-10-30T13:03:00Z'),
+    ])
+    await openL1($, on, loopReply(log))
+    const ui = await $.ui.mount(paneAt(160))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: 'strip-documents' }))?.props.label).toBe('Documents 3')
+    expect((await ui.find({ key: 'document-20' }))?.text).toMatch(/^brief · brief · text\/plain · – · cdcdcdcdcdcd · /)
+    const unreadable = (await ui.find({ key: 'document-21' }))?.text
+    expect(unreadable).toBe('unreadable document event 21: its sha256 is not 64 lowercase hex characters#21')
+    // The same words are the event's timeline line; the section's own row draws them in the warning colour.
+    const colours = (await ui.findAll({ type: 'Text', text: /^unreadable document event 21: / })).map(one => one.props.color)
+    expect(colours).toContain('warning')
+    expect((await ui.find({ key: 'document-22' }))?.text).toMatch(/^unreadable document event 22: /)
+    // A kind the section does not read makes no row.
+    expect(await ui.find({ key: 'document-23' })).toBe(undefined)
+    expect(await ui.find({ key: 'spec-section' })).toBeDefined()
+    expect((await ui.find({ key: 'strip-timeline' }))?.props.label).toBe('Timeline 13')
+    await ui.unmount()
+  })
+
+  test('neither the encoded nor the decoded bytes of a document are drawn or copied, with every timeline row expanded, at every width', async ($, on) => {
+    const copies: string[] = []
+    await openL1($, on, loopReply(DOCS_EXPORT), copies)
+    let first = true
+    for (const width of [160, 100, 60]) {
+      const ui = await $.ui.mount(paneAt(width))
+      await ui.press({ key: 'refresh' })
+      // The expansion is kept in the view, so the rows stay open on the later mounts.
+      if (first) for (const id of [1, 2, 3]) await ui.press({ key: `event-row-${id}` })
+      first = false
+      for (const id of [1, 2, 3]) expect(await ui.find({ key: `event-detail-${id}` })).toBeDefined()
+      const codes = (await ui.findAll({ type: 'Code' })).map(one => String(one.props.source))
+      expect(codes.some(source => source.includes('"content_b64": "(not shown: 42 bytes)"'))).toBe(true)
+      expect(codes.some(source => source.includes('"content_b64": "(not shown: 35 bytes)"'))).toBe(true)
+      for (const button of await ui.findAll({ type: 'Button' })) {
+        if (String(button.props.label ?? '').startsWith('Copy')) await ui.press({ key: button.key ?? '' })
+      }
+      // Every string the pane draws or offers: each Text, Code source, Button and Link label, Link target, Markdown text, and every copy.
+      const drawn: string[] = [...copies]
+      for (const one of await ui.findAll({ type: 'Text' })) drawn.push(one.text)
+      for (const one of await ui.findAll({ type: 'Code' })) drawn.push(String(one.props.source))
+      for (const one of await ui.findAll({ type: 'Button' })) drawn.push(String(one.props.label ?? ''), one.text)
+      for (const one of await ui.findAll({ type: 'Link' })) drawn.push(String(one.props.label ?? ''), String(one.props.href ?? ''))
+      for (const one of await ui.findAll({ type: 'Markdown' })) drawn.push(String(one.props.text ?? ''))
+      expect(drawn.length).toBeGreaterThan(20)
+      for (const text of drawn) {
+        for (const b64 of DOCS_B64) expect(text).not.toContain(b64.slice(0, 12))
+        for (const line of DOCS_DECODED) expect(text).not.toContain(line)
+      }
+      await ui.unmount()
+    }
+    expect(copies).toContain('L1')
+  })
+
+  test('the pane runs only the read verbs while it draws the Documents section', async ($, on) => {
+    const seen: string[][] = []
+    await openL1($, on, loopReply(DOCS_EXPORT), [], seen)
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect(await ui.find({ key: 'document-3' })).toBeDefined()
+    expect(seen.some(argv => argv.includes('export-item'))).toBe(true)
+    for (const argv of seen) {
+      expect(argv[1]).toBe('--json')
+      expect((READ_VERBS as readonly string[]).includes(argv[2] ?? '')).toBe(true)
+      expect(argv).not.toContain('doc')
     }
     await ui.unmount()
   })
