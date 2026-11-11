@@ -947,7 +947,7 @@ export function timelineOf(events: readonly Event[], filter: string, order: 'new
         events: [who, event],
       })
     } else {
-      rows.push({ ...base, id: event.id, kind: event.kind, summary: event.summary, elapsed: null, folded: false, events: [event] })
+      rows.push({ ...base, id: event.id, kind: event.kind, summary: summaryOf(event), elapsed: null, folded: false, events: [event] })
     }
   }
   const kept = filter === 'all' ? rows : rows.filter(row => kindGroup(row.kind) === filter)
@@ -991,7 +991,7 @@ export function windowOf(total: number, offset: number, bodyRows: number, leadin
 
 /* The strip under the tab row. */
 
-export type SectionKey = 'now' | 'decisions' | 'links' | 'timeline' | 'spec' | 'ticket'
+export type SectionKey = 'now' | 'decisions' | 'links' | 'timeline' | 'spec' | 'documents' | 'ticket'
 
 export type StripEntry = { section: SectionKey; label: string; hotkey: string; count: string }
 
@@ -1001,6 +1001,7 @@ const STRIP: readonly { section: SectionKey; label: string; hotkey: string }[] =
   { section: 'links', label: 'Links', hotkey: 'l' },
   { section: 'timeline', label: 'Timeline', hotkey: 't' },
   { section: 'spec', label: 'Spec', hotkey: 'p' },
+  { section: 'documents', label: 'Documents', hotkey: 'm' },
   { section: 'ticket', label: 'Ticket', hotkey: 'g' },
 ]
 
@@ -1009,8 +1010,9 @@ function countText(n: number): string {
 }
 
 /**
- * One entry per section the item has: its hotkey and its count, `–` when empty. Ticket is only there when the
- * item carries ticket frames (`ticketRecordOf`). With no events (a failed read) every count is `?`, never a false zero.
+ * One entry per section the item has: its hotkey and its count, `–` when empty. Documents counts the item's
+ * `doc.attached` events. Ticket is only there when the item carries ticket frames (`ticketRecordOf`). With no events
+ * (a failed read) every count is `?`, never a false zero.
  */
 export function stripOf(events: readonly Event[] | null): StripEntry[] {
   const entries: StripEntry[] = []
@@ -1024,6 +1026,7 @@ export function stripOf(events: readonly Event[] | null): StripEntry[] {
     else if (one.section === 'links') count = countText(linksOf(events).length)
     else if (one.section === 'timeline') count = countText(events.length)
     else if (one.section === 'spec') count = countText(specsOf(events).length)
+    else if (one.section === 'documents') count = countText(documentsOf(events).length)
     else if (one.section === 'ticket') {
       const record = ticketRecordOf(events)
       if (record === null) continue
@@ -1373,4 +1376,119 @@ export function ticketRoundLine(round: TicketRound): string {
 /** `orient complete · research complete · plan skipped · build pending`: each step and its status, in the plan's order. */
 export function ticketStepsLine(steps: readonly TicketStep[]): string {
   return steps.map(step => `${step.name} ${step.status}`).join(' · ')
+}
+
+/*
+ * The Documents section: every `doc.attached` event on the item (ledger 0.1.20, payload version 1), newest first.
+ * The pane reads only the payload's display fields (`role`, `title`, `mime`, `size`, `sha256` and
+ * `credential_override`) and the event's own id, time and actor. It never reads, decodes or draws `content_b64`, the
+ * document's bytes, and a field it does not name is ignored. A payload that is not an object, or whose `sha256` is not
+ * 64 lowercase hex characters, is one unreadable row naming its event id; a missing display field is an en dash.
+ */
+
+/** The event kind a document is attached as. */
+export const DOC_KIND = 'doc.attached'
+/** The payload key holding the document's bytes (base64): replaced, never decoded, wherever a payload is drawn. */
+const DOC_CONTENT = 'content_b64'
+const DOC_SHA256 = /^[0-9a-f]{64}$/
+/** How many hex characters of the sha256 a row shows. */
+export const DOC_DIGEST_CHARS = 12
+/** A display field the payload does not carry. */
+const NO_FIELD = '–'
+
+export type ReadableDocument = {
+  eventId: number
+  readable: true
+  /** The title, or the role when there is no title. */
+  name: string
+  role: string
+  mime: string
+  /** `42 bytes`. */
+  size: string
+  /** The first DOC_DIGEST_CHARS characters of the sha256. */
+  digest: string
+  /** When it was attached, as `Nov 3 14:02`. */
+  at: string
+  /** Who attached it: actor and harness, as the timeline shows them. */
+  by: string
+  /** True only when the payload's `credential_override` is exactly true. */
+  override: boolean
+}
+export type UnreadableDocument = { eventId: number; readable: false; reason: string }
+export type DocumentRow = ReadableDocument | UnreadableDocument
+
+/** One line of display text: whitespace and control characters fold to one space, so a field never breaks its row. */
+function shown(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const line = value.replace(/[\s\u0000-\u001f\u007f-\u009f]+/g, ' ').trim()
+  return line === '' ? null : line
+}
+
+/** `42 bytes`, `1 byte`, `65,536 bytes`; null for anything but a whole number of 0 or more. */
+function bytesOf(value: unknown): string | null {
+  const n = whole(value)
+  return n === null || n < 0 ? null : `${thousands(n)} ${n === 1 ? 'byte' : 'bytes'}`
+}
+
+/** One `doc.attached` event as a Documents row, or the reason it cannot be read. */
+function documentOf(event: Event): DocumentRow {
+  const payload: unknown = event.payload
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return { eventId: event.id, readable: false, reason: 'the payload is not an object' }
+  const p = payload as Payload
+  const sha256 = p.sha256
+  if (typeof sha256 !== 'string' || !DOC_SHA256.test(sha256)) return { eventId: event.id, readable: false, reason: 'its sha256 is not 64 lowercase hex characters' }
+  const role = shown(p.role)
+  const when = whenOf(event.recordedAt)
+  const by = [shown(event.actor), shown(event.harness)].filter((one): one is string => one !== null).join('/')
+  return {
+    eventId: event.id,
+    readable: true,
+    name: shown(p.title) ?? role ?? NO_FIELD,
+    role: role ?? NO_FIELD,
+    mime: shown(p.mime) ?? NO_FIELD,
+    size: bytesOf(p.size) ?? NO_FIELD,
+    digest: sha256.slice(0, DOC_DIGEST_CHARS),
+    at: when === '?' ? NO_FIELD : when,
+    by: by === '' ? NO_FIELD : by,
+    override: p.credential_override === true,
+  }
+}
+
+/** Every `doc.attached` event on the item, newest first; an event of any other kind never makes a row. */
+export function documentsOf(events: readonly Event[]): DocumentRow[] {
+  return oldestFirstEvents(events)
+    .filter(one => one.kind === DOC_KIND)
+    .reverse()
+    .map(documentOf)
+}
+
+/** `The brief · brief · text/markdown · 42 bytes · d82b5d187c28 · Nov 3 14:02 · seat-a/cli`. */
+export function documentLine(row: ReadableDocument): string {
+  return [row.name, row.role, row.mime, row.size, row.digest, row.at, row.by].join(' · ')
+}
+
+/** `unreadable document event 7: <reason>`. */
+export function unreadableDocumentLine(row: UnreadableDocument): string {
+  return `unreadable document event ${row.eventId}: ${row.reason}`
+}
+
+/** An event's one line in the timeline: a document's is drawn from its display fields alone, never from its bytes. */
+function summaryOf(event: Event): string {
+  if (event.kind !== DOC_KIND) return event.summary
+  const row = documentOf(event)
+  if (!row.readable) return unreadableDocumentLine(row)
+  return [row.name, row.size, row.digest, ...(row.override ? ['credential override'] : [])].join(' · ')
+}
+
+/**
+ * The payload an expanded timeline row draws. A document's `content_b64` is replaced by a placeholder naming its size,
+ * so neither the encoded nor the decoded bytes are ever drawn, and a document payload that is not an object draws as
+ * `{}`. Every other event's payload is drawn as the ledger wrote it.
+ */
+export function shownPayload(event: Event): unknown {
+  if (event.kind !== DOC_KIND) return event.payload
+  const p = payloadOf(event)
+  if (!(DOC_CONTENT in p)) return p
+  const size = bytesOf(p.size)
+  return { ...p, [DOC_CONTENT]: size === null ? '(not shown)' : `(not shown: ${size})` }
 }

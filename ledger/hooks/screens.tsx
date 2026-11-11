@@ -21,6 +21,8 @@ import {
   dailyTouches,
   dayGroups,
   dayOf,
+  documentLine,
+  documentsOf,
   filterDecisions,
   electionsOf,
   filterItems,
@@ -51,6 +53,7 @@ import {
   segments,
   sessionLinkLines,
   sessionsOf,
+  shownPayload,
   specLine,
   specMeta,
   specMoved,
@@ -74,6 +77,7 @@ import {
   statusGlyph,
   thousands,
   typesOf,
+  unreadableDocumentLine,
   whenOf,
 } from './model'
 
@@ -526,7 +530,7 @@ function eventsFailed(ui: Ui, d: Detail): RenderElement {
   return (
     <Box key="events-failed" flexDirection="column" marginTop={1}>
       <Text color="error">could not read the events of {d.id}: {moved ? 'the ledger moved while reading; press r' : (d.eventsError ?? '')}</Text>
-      <Text dimColor>The stop stamp, spec, decisions, records, reviews, tried, notes, links and timeline come from them and are not shown. Press r to read again.</Text>
+      <Text dimColor>The stop stamp, spec, documents, decisions, records, reviews, tried, notes, links and timeline come from them and are not shown. Press r to read again.</Text>
     </Box>
   )
 }
@@ -824,7 +828,7 @@ function linksSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame, ban
         )
       })}
       {note(ui, 'links-in', 'in: related items need ledger links (LP6-3)', { dimColor: true })}
-      {note(ui, 'links-docs', 'documents: documents land with LC5', { dimColor: true })}
+      {note(ui, 'links-docs', 'documents: listed under Documents (m)', { dimColor: true })}
     </Box>
   )
 }
@@ -885,7 +889,7 @@ function timelineRow(ui: Ui, row: TimelineRow, open: boolean, act: Act, frame: F
         <Box key={`event-detail-${row.id}`} flexDirection={wide ? 'row' : 'column'} gap={wide ? 2 : 0} paddingLeft={2} paddingBottom={1}>
           <Box flexDirection="column">
             {row.events.map(event => (
-              <Code key={`payload-${event.id}`} source={JSON.stringify(event.payload, null, 2)} language="json" />
+              <Code key={`payload-${event.id}`} source={JSON.stringify(shownPayload(event), null, 2)} language="json" />
             ))}
           </Box>
           <Box flexDirection="column">{row.events.map(event => provenance(ui, event, act))}</Box>
@@ -1014,6 +1018,45 @@ function specSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame): Ren
           </Box>
         ))}
       </Box>
+    </Box>
+  )
+}
+
+/**
+ * The documents attached to the item (`doc.attached`), newest first, one row each: the title (or the role), the role,
+ * the mime type, the size, the start of the sha256, when and by whom, and `credential override` in the warning colour
+ * when the ledger attached it over a credential-shape hit. A payload the pane cannot read is a row that says so. Only
+ * those fields are read: the document's bytes are never decoded or drawn.
+ */
+function documentsSection(ui: Ui, d: Detail): RenderElement {
+  const { Box, Text } = ui
+  if (d.eventsError !== null) {
+    return (
+      <Box key="documents" flexDirection="column">
+        {sectionHeader(ui, 'Documents', '?', `${SECTION_KEY_PREFIX}documents`)}
+        {unread(ui, 'documents-unread')}
+      </Box>
+    )
+  }
+  const docs = documentsOf(d.events)
+  return (
+    <Box key="documents" flexDirection="column">
+      {sectionHeader(ui, 'Documents', docs.length === 0 ? '–' : String(docs.length), `${SECTION_KEY_PREFIX}documents`)}
+      {docs.length === 0 && note(ui, 'documents-none', 'no documents attached', { dimColor: true })}
+      {docs.map(one =>
+        one.readable ? (
+          <Box key={`document-${one.eventId}`} gap={1}>
+            <Text>{documentLine(one)}</Text>
+            {one.override && <Text color="warning">credential override</Text>}
+            <Text dimColor>#{one.eventId}</Text>
+          </Box>
+        ) : (
+          <Box key={`document-${one.eventId}`} gap={1}>
+            <Text color="warning">{unreadableDocumentLine(one)}</Text>
+            <Text dimColor>#{one.eventId}</Text>
+          </Box>
+        ),
+      )}
     </Box>
   )
 }
@@ -1259,6 +1302,7 @@ function item(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
           {linksSection(body, view, d, act, frame, band)}
           {timelineSection(body, view, d, act, frame, band, leading)}
           {specSection(body, view, d, act, frame)}
+          {documentsSection(body, d)}
           {ticketSection(body, d)}
           {recordSections(body, d)}
         </Box>

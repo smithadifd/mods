@@ -52,6 +52,11 @@ describe('the command and its arguments', () => {
       expect(() => argvFor(cliFrom({}), write as never)).toThrow(`${write} is not a read verb`)
     }
   })
+
+  test('the read verbs are exactly these eight: adding one, such as `doc`, fails here first', () => {
+    expect([...READ_VERBS]).toEqual(['doctor', 'query', 'ready', 'decisions', 'card', 'export-item', 'search', 'verify'])
+    expect(() => argvFor(cliFrom({}), 'doc' as never)).toThrow('doc is not a read verb')
+  })
 })
 
 describe('the envelope', () => {
