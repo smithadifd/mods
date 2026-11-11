@@ -1,6 +1,6 @@
 export type Status = 'open' | 'claimed' | 'blocked' | 'closed'
 export type Standing = 'lean' | 'settled' | 'superseded'
-export type Screen = 'home' | 'needs' | 'items' | 'item' | 'decisions' | 'search'
+export type Screen = 'home' | 'needs' | 'items' | 'seats' | 'item' | 'decisions' | 'search'
 
 /** One row of `ledger query` or `ledger ready`. */
 export type Item = {

@@ -25,6 +25,7 @@ import {
   electionsOf,
   filterItems,
   firstOpenable,
+  groupBySeat,
   fit,
   grantOf,
   groupLinks,
@@ -114,6 +115,7 @@ const TABS: readonly { screen: Screen; label: string; hotkey: string }[] = [
   { screen: 'home', label: 'Home', hotkey: 'h' },
   { screen: 'needs', label: 'Needs you', hotkey: 'u' },
   { screen: 'items', label: 'Items', hotkey: 'i' },
+  { screen: 'seats', label: 'By seat', hotkey: 'w' },
   { screen: 'decisions', label: 'Decisions', hotkey: 'd' },
   { screen: 'search', label: 'Search', hotkey: 's' },
 ]
@@ -168,6 +170,8 @@ function screen(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
       return needs(ui, view, act, frame)
     case 'items':
       return items(ui, view, act, frame)
+    case 'seats':
+      return seats(ui, view, act, frame)
     case 'item':
       return item(ui, view, act, frame)
     case 'decisions':
@@ -455,6 +459,40 @@ function items(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
           })
         ),
       )}
+    </Box>
+  )
+}
+
+/**
+ * Claimed items under one heading per seat, the claim label as the ledger reports it, each row opening its item (whose
+ * Now and Links sections copy a resume line for every session it names). A claimed item with no usable label sits
+ * under its own heading, never under a guessed seat. Unclaimed items are not here: they stay in Items.
+ */
+function seats(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
+  const { Box, Button, Text } = ui
+  const grouped = groupBySeat(view.items)
+  const order = [...grouped.seats.flatMap(group => group.items), ...grouped.unlabelled].map(one => one.id)
+  const idWidth = idWidthOf(order)
+  const seatCount = grouped.seats.length
+  return (
+    <Box flexDirection="column">
+      <Box gap={1} marginTop={1} flexWrap="wrap">
+        <Text key="seats-count" dimColor>
+          {thousands(order.length)} claimed {order.length === 1 ? 'item' : 'items'} · {seatCount} {seatCount === 1 ? 'seat' : 'seats'}
+        </Text>
+        <Button key="seats-unclaimed" plain dimColor onPress={() => act.listWith('all', 'all')}>
+          Unclaimed items are in Items
+        </Button>
+      </Box>
+      {order.length === 0 && <Text dimColor>Nothing is claimed.</Text>}
+      {grouped.seats.map((group, index) => (
+        <Box key={`seat-${index}`} flexDirection="column">
+          {sectionHeader(ui, cut(group.seat, Math.max(10, frame.width - 8)), String(group.items.length), `seat-heading-${index}`)}
+          {group.items.map(one => itemRow(ui, one, act, frame, `seat-${index}`, idWidth, one.type, order))}
+        </Box>
+      ))}
+      {grouped.unlabelled.length > 0 && sectionHeader(ui, 'Claimed, no seat label', String(grouped.unlabelled.length), 'seat-heading-none')}
+      {grouped.unlabelled.map(one => itemRow(ui, one, act, frame, 'seat-none', idWidth, one.type, order))}
     </Box>
   )
 }

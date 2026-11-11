@@ -375,6 +375,49 @@ export function needsYou(items: readonly Item[], doctor: Doctor | null): Needs {
   }
 }
 
+/** One seat's claimed items: `seat` is the claim label exactly as the ledger reports it. */
+export type SeatGroup = { seat: string; items: Item[] }
+
+/** Claimed items by seat, and the claimed items whose claim label is missing or malformed, which no seat takes. */
+export type BySeat = { seats: SeatGroup[]; unlabelled: Item[] }
+
+/**
+ * The seat a claimed item sits under: its claim label, exactly as the ledger reports it (no trimming, no case
+ * folding), when the item's status is `claimed` and the label is a string holding a character other than whitespace.
+ * Null otherwise: an item that is not claimed never sits under a seat, and a claimed item whose label is missing,
+ * empty, blank or not a string is never guessed into one.
+ */
+export function seatOf(one: Item): string | null {
+  if (one.status !== 'claimed') return null
+  const label: unknown = one.claim
+  return typeof label === 'string' && label.trim() !== '' ? label : null
+}
+
+/**
+ * The claimed items under one group per seat, seats in label order and items newest first within a seat; a claimed
+ * item with no usable label goes to `unlabelled`, never dropped. Items that are not claimed are left out: they stay
+ * in the Items list. Every claimed item lands in exactly one place.
+ */
+export function groupBySeat(items: readonly Item[]): BySeat {
+  const bySeat = new Map<string, Item[]>()
+  const unlabelled: Item[] = []
+  for (const one of sortItems(items)) {
+    if (one.status !== 'claimed') continue
+    const seat = seatOf(one)
+    if (seat === null) {
+      unlabelled.push(one)
+      continue
+    }
+    const list = bySeat.get(seat)
+    if (list === undefined) bySeat.set(seat, [one])
+    else list.push(one)
+  }
+  const seats = [...bySeat.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }) || (a < b ? -1 : a > b ? 1 : 0))
+    .map(([seat, list]) => ({ seat, items: list }))
+  return { seats, unlabelled }
+}
+
 export const STANDING_FILTERS = ['all', 'settled', 'lean', 'superseded'] as const
 
 export function filterDecisions(decisions: readonly Decision[], standing: string): Decision[] {
@@ -391,7 +434,7 @@ export type Asked =
 const ID = /^[A-Za-z][A-Za-z0-9._-]*$/
 
 /**
- * `/ledger`, `/ledger needs`, `/ledger blocked`, `/ledger NY-148`, `/ledger merge train`:
+ * `/ledger`, `/ledger needs`, `/ledger seats`, `/ledger blocked`, `/ledger NY-148`, `/ledger merge train`:
  * a screen, a status filter on the items list, one id, or words to search.
  */
 export function parseCommandArgs(args: string): Asked {
@@ -400,6 +443,7 @@ export function parseCommandArgs(args: string): Asked {
   const first = words[0]!.toLowerCase()
   if (words.length === 1) {
     if (first === 'needs' || first === 'needs-you' || first === 'you') return { screen: 'needs' }
+    if (first === 'seats' || first === 'by-seat') return { screen: 'seats' }
     if (first === 'home' || first === 'items' || first === 'decisions' || first === 'search') return { screen: first }
     if ((STATUS_FILTERS as readonly string[]).includes(first)) return { screen: 'items', status: first }
     if (ID.test(words[0]!)) return { id: words[0]! }

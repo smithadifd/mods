@@ -279,8 +279,8 @@ export const register: Register = (on, options) => {
     const started = await next(e)
     await $.command.register({
       name: 'ledger',
-      description: 'Show the ledger in a pane: what needs you, every item, the decisions, one item, or a search',
-      argumentHint: '[needs|items|decisions|search|ready|blocked|ITEM-ID|words to search]',
+      description: 'Show the ledger in a pane: what needs you, every item, claims by seat, the decisions, one item, or a search',
+      argumentHint: '[needs|items|seats|decisions|search|ready|blocked|ITEM-ID|words to search]',
     })
     if (refreshMs > 0) {
       $.clock.every(refreshMs, async () => {

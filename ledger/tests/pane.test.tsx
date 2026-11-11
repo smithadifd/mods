@@ -1648,3 +1648,162 @@ describe('children under their anchor', () => {
     await ui.unmount()
   })
 })
+
+describe('claimed items by seat', () => {
+  /** A claimed row as `query` answers it, with its owner and claim label. */
+  function held(id: string, title: string, owner: string, claim: string, updated: string): Record<string, unknown> {
+    return { ...row(id, 'ticket', 'claimed', updated, '2026-01-01T00:00:00Z', claim), title, owner }
+  }
+
+  // Two seats: row-a1 and row-a2 held by seat-a; row-b1 claimed for seat-b by another owner, so the claim and not the
+  // owner is the key; row-open never claimed.
+  const SEAT_ROWS = [
+    held('row-a1', 'First seat-a row', 'seat-a', 'seat-a', '2026-01-01T00:00:05Z'),
+    held('row-a2', 'Second seat-a row', 'seat-a', 'seat-a', '2026-01-01T00:00:06Z'),
+    held('row-b1', 'The seat-b row', 'director', 'seat-b', '2026-01-01T00:00:07Z'),
+    { ...row('row-open', 'ticket', 'open', '2026-01-01T00:00:04Z'), title: 'Nobody holds this' },
+  ]
+
+  const B1_CARD = { ...CARD, item_id: 'row-b1', title: 'The seat-b row', status: 'claimed', owner: 'director', claim: 'seat-b', notes: [], links: [{ event_id: 8, rel: 'session', target: 'sess-b1' }] }
+  const B1_LOG = {
+    completeness: { events_on_item: 3, events_returned: 3, events_decayed: 0 },
+    events: [
+      { id: 3, kind: 'item.created', actor: null, harness: 'cli', model: null, session: null, recorded_at: '2026-01-01T00:00:01Z', payload: { type: 'ticket', title: 'The seat-b row' } },
+      { id: 7, kind: 'item.state', actor: 'director', harness: 'cli', model: null, session: null, recorded_at: '2026-01-01T00:00:02Z', payload: { status: 'claimed', owner: 'director', claim: 'seat-b', expires_at: '2026-01-01T12:00:02Z' } },
+      { id: 8, kind: 'item.linked', actor: 'seat-b', harness: 'cli', model: null, session: null, recorded_at: '2026-01-01T00:00:03Z', payload: { rel: 'session', target: 'sess-b1' } },
+    ],
+  }
+
+  /** The ledger answering the seats `query` (or `items`), and row-b1's `card` and `export-item`. */
+  function seatReply(items: readonly Record<string, unknown>[] | null = null): (argv: readonly string[]) => Ran {
+    return argv => {
+      const verb = argv.find(word => (READ_VERBS as readonly string[]).includes(word))
+      if (verb === 'query') return ok({ items: items ?? SEAT_ROWS, limit: 5000, truncated: false })
+      if (verb === 'card' && argv.includes('row-b1')) return ok(B1_CARD)
+      if (verb === 'export-item' && argv.includes('row-b1')) return ok(B1_LOG)
+      return answer(argv)
+    }
+  }
+
+  async function seatScreen($: Parameters<TestBody>[0], on: On, items: readonly Record<string, unknown>[] | null = null, seen: string[][] = [], copies: string[] = []) {
+    engine(on, seen, seatReply(items), copies)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command(''))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    await ui.press({ key: 'tab-seats' })
+    return ui
+  }
+
+  async function seatRowKeys(ui: Awaited<ReturnType<typeof seatScreen>>): Promise<string[]> {
+    return (await ui.findAll({ type: 'Button' })).map(one => one.key ?? '').filter(key => /^seat-(\d+|none)-/.test(key))
+  }
+
+  test('items with two claim labels render under two seat headings, each under exactly its own seat', async ($, on) => {
+    const ui = await seatScreen($, on)
+    expect((await ui.find({ key: 'tab-seats' }))?.props).toMatchObject({ label: 'By seat', hotkey: 'w', variant: 'primary' })
+    // A heading's text is its title and its count run together; each title is its own Text, the label exactly.
+    expect((await ui.find({ key: 'seat-heading-0' }))?.text).toBe('seat-a2')
+    expect((await ui.find({ key: 'seat-heading-1' }))?.text).toBe('seat-b1')
+    expect((await ui.findAll({ type: 'Text', text: /^seat-a$/ })).length).toBe(1)
+    expect((await ui.findAll({ type: 'Text', text: /^seat-b$/ })).length).toBe(1)
+    expect(await ui.find({ key: 'seat-heading-2' })).toBe(undefined)
+    expect(await seatRowKeys(ui)).toEqual(['seat-0-row-a2', 'seat-0-row-a1', 'seat-1-row-b1'])
+    expect((await ui.find({ key: 'seat-1-row-b1' }))?.text).toContain('The seat-b row')
+    expect((await ui.find({ type: 'Text', text: /claimed items/ }))?.text).toBe('3 claimed items · 2 seats')
+    await ui.unmount()
+  })
+
+  test('an unclaimed item never appears under a seat, even when its row still names a claim; it stays in Items', async ($, on) => {
+    const ui = await seatScreen($, on, [...SEAT_ROWS, { ...row('row-done', 'ticket', 'closed', '2026-01-02T00:00:00Z'), claim: 'seat-a', owner: 'seat-a' }])
+    const keys = await seatRowKeys(ui)
+    expect(keys.some(key => key.endsWith('-row-open'))).toBe(false)
+    expect(keys.some(key => key.endsWith('-row-done'))).toBe(false)
+    expect(await ui.find({ key: 'seat-heading-none' })).toBe(undefined)
+    await ui.press({ key: 'seats-unclaimed' })
+    expect((await ui.find({ key: 'row-row-open' }))?.text).toContain('Nobody holds this')
+    expect((await ui.find({ key: 'row-row-done' }))?.text).toContain('title of row-done')
+    await ui.unmount()
+  })
+
+  test('a claimed item with a missing, blank or malformed claim is listed apart, never dropped and never under a seat', async ($, on) => {
+    const near = [
+      { ...row('n-null', 'ticket', 'claimed', '2026-01-02T00:00:01Z'), claim: null },
+      { ...row('n-blank', 'ticket', 'claimed', '2026-01-02T00:00:02Z'), claim: '   ' },
+      { ...row('n-number', 'ticket', 'claimed', '2026-01-02T00:00:03Z'), claim: 7 },
+      { ...row('n-object', 'ticket', 'claimed', '2026-01-02T00:00:04Z'), claim: { holder: 'seat-a' } },
+    ]
+    const ui = await seatScreen($, on, [...SEAT_ROWS, ...near])
+    expect((await ui.find({ key: 'seat-heading-none' }))?.text).toBe('Claimed, no seat label4')
+    const keys = await seatRowKeys(ui)
+    expect(keys.filter(key => key.startsWith('seat-none-')).sort()).toEqual(['seat-none-n-blank', 'seat-none-n-null', 'seat-none-n-number', 'seat-none-n-object'])
+    expect(keys.filter(key => /^seat-\d+-n-/.test(key))).toEqual([])
+    expect(await seatRowKeys(ui)).toContain('seat-0-row-a1')
+    await ui.unmount()
+  })
+
+  test('a seat row opens its item, whose session link renders the resume affordance and copies exactly its line', async ($, on) => {
+    const copies: string[] = []
+    const ui = await seatScreen($, on, null, [], copies)
+    await ui.press({ key: 'seat-1-row-b1' })
+    expect((await ui.find({ key: 'claim' }))?.text).toContain('claimed by seat-b')
+    const resume = await ui.find({ key: 'copy-resume-link-8' })
+    expect(resume?.props.label).toBe('Copy resume line')
+    await ui.press({ key: 'copy-resume-link-8' })
+    expect(copies).toEqual(['claude --resume sess-b1'])
+    await ui.unmount()
+  })
+
+  test('an item opened from a seat row has the Ticket section only when it has ticket frames', async ($, on) => {
+    const captured = { exitCode: 0, stdout: LEDGER_0_1_18_TICKET_EXPORT_STDOUT, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+    const reply = (argv: readonly string[]): Ran => {
+      const verb = argv.find(word => (READ_VERBS as readonly string[]).includes(word))
+      if (verb === 'export-item' && argv.includes('row-b1')) return captured
+      if (verb === 'card' && argv.includes('row-a1')) return ok({ ...B1_CARD, item_id: 'row-a1', claim: 'seat-a' })
+      if (verb === 'export-item' && argv.includes('row-a1')) return ok(B1_LOG)
+      return seatReply()(argv)
+    }
+    engine(on, [], reply)
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command(''))
+    const ui = await $.ui.mount(paneAt(160))
+    await ui.press({ key: 'refresh' })
+    await ui.press({ key: 'tab-seats' })
+    await ui.press({ key: 'seat-1-row-b1' })
+    expect((await ui.find({ key: 'strip-ticket' }))?.props).toMatchObject({ label: 'Ticket 12', hotkey: 'g' })
+    expect((await ui.find({ key: 'ticket-go-4' }))?.text).toBe('plan go · plan r1 · the person: "Go" #4')
+    await ui.press({ key: 'tab-seats' })
+    await ui.press({ key: 'seat-0-row-a1' })
+    expect(await ui.find({ key: 'strip-spec' })).toBeDefined()
+    expect(await ui.find({ key: 'strip-ticket' })).toBe(undefined)
+    expect(await ui.find({ key: 'section-ticket' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('/ledger seats opens straight to the seats, and nothing is claimed says so', async ($, on) => {
+    engine(on, [], seatReply([row('O1', 'ticket', 'open', '2026-01-02T00:00:00Z')]))
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command('seats'))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: 'tab-seats' }))?.props.variant).toBe('primary')
+    expect((await ui.find({ type: 'Text', text: /Nothing is claimed\./ }))?.text).toBe('Nothing is claimed.')
+    expect(await seatRowKeys(ui)).toEqual([])
+    await ui.unmount()
+  })
+
+  test('the pane runs only read verbs while it groups by seat and opens a seat row', async ($, on) => {
+    const seen: string[][] = []
+    const ui = await seatScreen($, on, null, seen)
+    await ui.press({ key: 'seat-0-row-a1' })
+    await ui.press({ key: 'tab-seats' })
+    await ui.press({ key: 'seat-1-row-b1' })
+    expect(seen.length).toBeGreaterThan(4)
+    for (const argv of seen) {
+      expect(argv[0]).toBe('ledger')
+      expect((READ_VERBS as readonly string[]).includes(argv[2] ?? '')).toBe(true)
+      for (const write of ['new', 'note', 'state', 'claim', 'link', 'elect', 'append', 'restore']) expect(argv).not.toContain(write)
+    }
+    await ui.unmount()
+  })
+})
