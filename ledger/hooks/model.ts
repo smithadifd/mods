@@ -1186,7 +1186,13 @@ export type TicketTried = { eventId: number; phase: string; what: string; outcom
 export type TicketStop = { eventId: number; phase: string; point: string; skills: string[]; refs: string[]; close: boolean }
 export type TicketUnreadable = { eventId: number; frame: string; reason: string }
 export type TicketRecord = {
+  /** Plan revisions the pane could read, newest first. */
   plans: TicketPlan[]
+  /**
+   * The event id of the newest plan frame (`ticket-plan:v<N>`, any version), readable or not, or null with none.
+   * Only the plan with this id is the current revision; when it is unreadable, no older plan is promoted to current.
+   */
+  currentPlan: number | null
   goes: TicketGo[]
   rounds: TicketRound[]
   tried: TicketTried[]
@@ -1285,12 +1291,13 @@ function checksOf(criteria: readonly string[], revision: number, rounds: readonl
 
 /**
  * The item's ticket record, or null when no note carries a ticket frame: an item the /ticket skill never wrote has
- * no Ticket section, not an empty one. Plan revisions come newest first; goes, rounds, tried and stops in the
+ * no Ticket section, not an empty one. Plan revisions come newest first, and `currentPlan` names the newest plan
+ * frame even when it is unreadable; goes, rounds, tried and stops in the
  * order they were written. Tried records and stop stamps count only when the skill wrote them (`source: ticket`).
  */
 export function ticketRecordOf(events: readonly Event[]): TicketRecord | null {
   const plans: (Omit<TicketPlan, 'criteria'> & { criteria: string[] })[] = []
-  const record: TicketRecord = { plans: [], goes: [], rounds: [], tried: [], stops: [], unreadable: [] }
+  const record: TicketRecord = { plans: [], currentPlan: null, goes: [], rounds: [], tried: [], stops: [], unreadable: [] }
   let framed = false
   for (const event of oldestFirstEvents(events)) {
     const p = payloadOf(event)
@@ -1301,6 +1308,8 @@ export function ticketRecordOf(events: readonly Event[]): TicketRecord | null {
       const kind = match[1]!
       const version = Number(match[2])
       const frame = `ticket-${kind}:v${version}`
+      // Every plan frame counts for revision order, whatever its version and whether or not it reads.
+      if (kind === 'plan') record.currentPlan = event.id
       if (!TICKET_KINDS.includes(kind)) {
         record.unreadable.push({ eventId: event.id, frame, reason: 'a record kind the ticket skill does not write' })
         continue

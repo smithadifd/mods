@@ -803,6 +803,28 @@ describe('the item screen: strip, Now and the timeline', () => {
     await ui.unmount()
   })
 
+  test('a readable v2 plan followed by an unsupported v3 plan: the v3 is drawn first as the unreadable current revision, the v2 without current', async ($, on) => {
+    const plan = { schema: 'ticket-plan-card/v2', revision: 1, pass: 'abc123', criteria: ['it works'], steps: [{ name: 'build', status: 'pending' }], open_questions: [] }
+    const newer = { ...plan, schema: 'ticket-plan-card/v3', revision: 2 }
+    await openL1(
+      $,
+      on,
+      loopReply(loopLog([stamped(30, 'item.note', { text: `ticket-plan:v2 ${JSON.stringify(plan)}` }, '2026-10-30T13:00:00Z'), stamped(31, 'item.note', { text: `ticket-plan:v3 ${JSON.stringify(newer)}` }, '2026-10-30T13:01:00Z')])),
+    )
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    const current = (await ui.find({ key: 'ticket-plan-current-unreadable-31' }))?.text
+    expect(current).toBe('current · ticket-plan:v3 unreadable: format version 3 is not one this pane reads #31')
+    const older = (await ui.find({ key: 'ticket-plan-line-30' }))?.text
+    expect(older).toMatch(/^r1 · \w+ \d+ · pass abc123 #30$/)
+    expect(older).not.toContain('current')
+    // The unreadable current revision is drawn above the older readable one.
+    const section = (await ui.find({ key: 'ticket' }))?.text ?? ''
+    expect(section.indexOf(current!)).toBeGreaterThan(-1)
+    expect(section.indexOf(current!)).toBeLessThan(section.indexOf(older!))
+    await ui.unmount()
+  })
+
   test('the Ticket section draws a closed ticket from a captured ledger 0.1.18 export', async ($, on) => {
     const captured = { exitCode: 0, stdout: LEDGER_0_1_18_TICKET_EXPORT_STDOUT, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
     await openL1($, on, loopReply(captured))

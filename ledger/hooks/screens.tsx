@@ -1022,7 +1022,8 @@ const CHECK_GLYPH: Record<TicketCheck['mark'], string> = { passed: '✓', failed
 const CHECK_COLOR: Record<TicketCheck['mark'], string | undefined> = { passed: 'success', failed: 'error', unchecked: undefined }
 
 /**
- * The /ticket skill's pass record: plan revisions (newest first) with each criterion checked against the latest
+ * The /ticket skill's pass record: plan revisions (newest first; `current` only on the newest plan frame, which is
+ * drawn first as unreadable when the pane cannot read it) with each criterion checked against the latest
  * review round of that revision, the goes, the review rounds, the tried records and the stop stamps. Absent when
  * the item carries no ticket frame or its events could not be read; a frame it cannot read is listed as unreadable.
  */
@@ -1031,6 +1032,8 @@ function ticketSection(ui: Ui, d: Detail): RenderElement | false {
   if (d.eventsError !== null) return false
   const record = ticketRecordOf(d.events)
   if (record === null) return false
+  // The newest plan frame, when the pane cannot read it: the current revision is unreadable, and no older plan is current.
+  const currentUnreadable = record.unreadable.find(one => one.eventId === record.currentPlan)
   const line = (key: string, content: string, eventId: number, color?: string): RenderElement => (
     <Box key={key}>
       <Text color={color}>
@@ -1041,10 +1044,12 @@ function ticketSection(ui: Ui, d: Detail): RenderElement | false {
   return (
     <Box key="ticket" flexDirection="column">
       {sectionHeader(ui, 'Ticket', String(ticketCount(record)), `${SECTION_KEY_PREFIX}ticket`)}
-      {record.plans.length > 0 && <Text bold>Plan revisions</Text>}
-      {record.plans.map((plan, index) => (
+      {(record.plans.length > 0 || currentUnreadable !== undefined) && <Text bold>Plan revisions</Text>}
+      {currentUnreadable !== undefined &&
+        line(`ticket-plan-current-unreadable-${currentUnreadable.eventId}`, `current · ${currentUnreadable.frame} unreadable: ${currentUnreadable.reason}`, currentUnreadable.eventId, 'warning')}
+      {record.plans.map(plan => (
         <Box key={`ticket-plan-${plan.eventId}`} flexDirection="column">
-          {line(`ticket-plan-line-${plan.eventId}`, [`r${plan.revision}`, ...(index === 0 ? ['current'] : []), dayOf(plan.recordedAt), `pass ${plan.pass}`].join(' · '), plan.eventId)}
+          {line(`ticket-plan-line-${plan.eventId}`, [`r${plan.revision}`, ...(plan.eventId === record.currentPlan ? ['current'] : []), dayOf(plan.recordedAt), `pass ${plan.pass}`].join(' · '), plan.eventId)}
           {plan.criteria.map((check, at) => (
             <Box key={`ticket-criterion-${plan.eventId}-${at}`}>
               <Text>

@@ -143,8 +143,21 @@ describe('a frame the section cannot read is shown as unreadable, never guessed'
     const record = ticketRecordOf([frame(1, 'plan', plan(1), 3), frame(2, 'decision', GO)])!
     expect(record.plans).toEqual([])
     expect(record.unreadable).toEqual([{ eventId: 1, frame: 'ticket-plan:v3', reason: 'format version 3 is not one this pane reads' }])
+    expect(record.currentPlan).toBe(1)
     expect(record.goes.map(ticketGoLine)).toEqual(['plan go · plan r1 · the person: "Go"'])
     expect(stripOf([frame(1, 'plan', plan(1), 3)]).find(entry => entry.section === 'ticket')?.count).toBe('1')
+  })
+
+  test('a readable v2 plan followed by an unsupported v3 plan: the v3 is the current revision, the v2 is not', () => {
+    const record = ticketRecordOf([frame(1, 'plan', plan(1)), frame(2, 'plan', plan(2), 3)])!
+    expect(record.plans.map(one => [one.eventId, one.revision])).toEqual([[1, 1]])
+    expect(record.currentPlan).toBe(2)
+    expect(record.unreadable).toEqual([{ eventId: 2, frame: 'ticket-plan:v3', reason: 'format version 3 is not one this pane reads' }])
+    // An unreadable v2 plan frame newest is the current revision too; the older readable plan is not promoted.
+    expect(ticketRecordOf([frame(1, 'plan', plan(1)), frame(2, 'plan', { ...plan(2), pass: '' })])!.currentPlan).toBe(2)
+    // With every plan frame readable, the newest one is current.
+    expect(ticketRecordOf([frame(1, 'plan', plan(1)), frame(2, 'plan', plan(2))])!.currentPlan).toBe(2)
+    expect(ticketRecordOf([frame(1, 'decision', GO)])!.currentPlan).toBe(null)
   })
 
   test('each near miss of the frame grammar is unreadable with its reason, or not a frame at all', () => {
