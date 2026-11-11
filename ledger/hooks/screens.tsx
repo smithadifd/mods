@@ -1,7 +1,7 @@
 import type { Elements, RenderElement } from 'claude-code'
 
 import type { AskOption, Decision, Detail, Event, Item, Line, Screen, Spec, TimelineOrder, View } from '../types'
-import type { Band, Nav, TimelineRow } from './model'
+import type { Band, Nav, TicketCheck, TimelineRow } from './model'
 import {
   SECTION_KEY_PREFIX,
   STANDING_FILTERS,
@@ -59,7 +59,11 @@ import {
   stampOf,
   stopOf,
   stripOf,
-  ticketOf,
+  ticketCount,
+  ticketGoLine,
+  ticketRecordOf,
+  ticketRoundLine,
+  ticketStepsLine,
   timelineOf,
   triedOf,
   windowOf,
@@ -1014,21 +1018,86 @@ function specSection(ui: Ui, view: View, d: Detail, act: Act, frame: Frame): Ren
   )
 }
 
+const CHECK_GLYPH: Record<TicketCheck['mark'], string> = { passed: '✓', failed: '✗', unchecked: '·' }
+const CHECK_COLOR: Record<TicketCheck['mark'], string | undefined> = { passed: 'success', failed: 'error', unchecked: undefined }
+
+/**
+ * The /ticket skill's pass record: plan revisions (newest first; `current` only on the newest plan frame, which is
+ * drawn first as unreadable when the pane cannot read it) with each criterion checked against the latest
+ * review round of that revision, the goes, the review rounds, the tried records and the stop stamps. Absent when
+ * the item carries no ticket frame or its events could not be read; a frame it cannot read is listed as unreadable.
+ */
 function ticketSection(ui: Ui, d: Detail): RenderElement | false {
   const { Box, Text } = ui
   if (d.eventsError !== null) return false
-  const notes = ticketOf(d.events)
-  if (notes.length === 0) return false
+  const record = ticketRecordOf(d.events)
+  if (record === null) return false
+  // The newest plan frame, when the pane cannot read it: the current revision is unreadable, and no older plan is current.
+  const currentUnreadable = record.unreadable.find(one => one.eventId === record.currentPlan)
+  const line = (key: string, content: string, eventId: number, color?: string): RenderElement => (
+    <Box key={key}>
+      <Text color={color}>
+        {content} <Text dimColor>#{eventId}</Text>
+      </Text>
+    </Box>
+  )
   return (
     <Box key="ticket" flexDirection="column">
-      {sectionHeader(ui, 'Ticket', String(notes.length), `${SECTION_KEY_PREFIX}ticket`)}
-      {notes.map(one => (
-        <Box key={`ticket-${one.eventId}`} gap={1}>
-          <Text dimColor>{fit(one.type, 8)}</Text>
-          <Text color={one.readable ? undefined : 'warning'}>{one.text}</Text>
-          <Text dimColor>#{one.eventId}</Text>
+      {sectionHeader(ui, 'Ticket', String(ticketCount(record)), `${SECTION_KEY_PREFIX}ticket`)}
+      {(record.plans.length > 0 || currentUnreadable !== undefined) && <Text bold>Plan revisions</Text>}
+      {currentUnreadable !== undefined &&
+        line(`ticket-plan-current-unreadable-${currentUnreadable.eventId}`, `current · ${currentUnreadable.frame} unreadable: ${currentUnreadable.reason}`, currentUnreadable.eventId, 'warning')}
+      {record.plans.map(plan => (
+        <Box key={`ticket-plan-${plan.eventId}`} flexDirection="column">
+          {line(`ticket-plan-line-${plan.eventId}`, [`r${plan.revision}`, ...(plan.eventId === record.currentPlan ? ['current'] : []), dayOf(plan.recordedAt), `pass ${plan.pass}`].join(' · '), plan.eventId)}
+          {plan.criteria.map((check, at) => (
+            <Box key={`ticket-criterion-${plan.eventId}-${at}`}>
+              <Text>
+                {'  '}
+                <Text color={CHECK_COLOR[check.mark]} dimColor={check.mark === 'unchecked'}>
+                  {CHECK_GLYPH[check.mark]}
+                </Text>{' '}
+                {check.text}
+                {check.round !== null && <Text dimColor> · round {check.round}</Text>}
+              </Text>
+            </Box>
+          ))}
+          {plan.steps.length > 0 && note(ui, `ticket-steps-${plan.eventId}`, `  steps: ${ticketStepsLine(plan.steps)}`, { dimColor: true })}
+          {plan.steps
+            .filter(step => step.skip !== '')
+            .map(step => note(ui, `ticket-skip-${plan.eventId}-${step.name}`, `  ${step.name} skipped: ${step.skip}`, { dimColor: true }))}
+          {plan.diffStatement !== '' && note(ui, `ticket-diff-${plan.eventId}`, `  diff: ${plan.diffStatement}`, { dimColor: true })}
+          {plan.openQuestions.map((question, at) => note(ui, `ticket-question-${plan.eventId}-${at}`, `  open question: ${question}`, { dimColor: true }))}
         </Box>
       ))}
+      {record.goes.length > 0 && <Text bold>Goes</Text>}
+      {record.goes.map(go => line(`ticket-go-${go.eventId}`, ticketGoLine(go), go.eventId))}
+      {record.rounds.length > 0 && <Text bold>Review rounds</Text>}
+      {record.rounds.map(round => (
+        <Box key={`ticket-round-${round.eventId}`} flexDirection="column">
+          {line(`ticket-round-line-${round.eventId}`, ticketRoundLine(round), round.eventId, round.verdict === 'pass' ? 'success' : 'error')}
+          {note(ui, `ticket-evidence-${round.eventId}`, `  evidence: ${round.evidence}`, { dimColor: true })}
+          {round.findings.map((finding, at) => note(ui, `ticket-finding-${round.eventId}-${at}`, `    - ${finding}`, { dimColor: true }))}
+        </Box>
+      ))}
+      {record.tried.length > 0 && <Text bold>Tried</Text>}
+      {record.tried.map(one => (
+        <Box key={`ticket-tried-${one.eventId}`} flexDirection="column">
+          {line(`ticket-tried-line-${one.eventId}`, `[${one.phase}] ${one.what}`, one.eventId)}
+          {one.outcome !== '' && note(ui, `ticket-outcome-${one.eventId}`, `  outcome: ${one.outcome}`, { dimColor: true })}
+          {one.evidence !== '' && note(ui, `ticket-tried-evidence-${one.eventId}`, `  evidence: ${one.evidence}`, { dimColor: true })}
+        </Box>
+      ))}
+      {record.stops.length > 0 && <Text bold>Stops</Text>}
+      {record.stops.map(one => (
+        <Box key={`ticket-stop-${one.eventId}`} flexDirection="column">
+          {line(`ticket-stop-line-${one.eventId}`, `${one.close ? 'close' : 'stop'} [${one.phase}] ${one.point}`, one.eventId)}
+          {one.skills.length > 0 && note(ui, `ticket-skills-${one.eventId}`, `  next skills: ${one.skills.join(', ')}`, { dimColor: true })}
+          {one.refs.length > 0 && note(ui, `ticket-refs-${one.eventId}`, `  refs: ${one.refs.join(', ')}`, { dimColor: true })}
+        </Box>
+      ))}
+      {record.unreadable.length > 0 && <Text bold>Unreadable</Text>}
+      {record.unreadable.map(one => line(`ticket-unreadable-${one.eventId}`, `${one.frame} unreadable: ${one.reason}`, one.eventId, 'warning'))}
     </Box>
   )
 }

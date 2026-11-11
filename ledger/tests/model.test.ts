@@ -59,7 +59,7 @@ import {
   stampOf,
   stopOf,
   stripOf,
-  ticketOf,
+  ticketRecordOf,
   timelineOf,
   triedOf,
   standingColor,
@@ -632,23 +632,6 @@ describe('the strip, navigation, links and the ticket pass', () => {
     expect(stripOf(framed).find(entry => entry.section === 'ticket')).toMatchObject({ hotkey: 'g', count: '1' })
   })
 
-  test('ticket notes: readable frames are summarised, an unreadable one is kept and marked', () => {
-    const notes = ticketOf([
-      ev(1, 'item.note', { text: 'ticket-plan:v2 {"revision":1,"criteria":["a","b"]}' }),
-      ev(2, 'item.note', { text: 'ticket-decision:v2 {"gate":"plan","plan_revision":1,"who":"the person","verbatim":"Go"}' }),
-      ev(3, 'item.note', { text: 'ticket-review:v2 {"round":1,"verdict":"pass","reviewer":"fresh"}' }),
-      ev(4, 'item.note', { text: 'ticket-plan:v3 {not json' }),
-      ev(5, 'item.note', { text: 'ticket-other:v2 {}' }),
-      ev(6, 'item.note', { text: 'plain' }),
-    ])
-    expect(notes.map(one => [one.eventId, one.type, one.readable, one.text])).toEqual([
-      [1, 'plan', true, 'plan r1 · 2 criteria'],
-      [2, 'decision', true, 'plan go r1 the person "Go"'],
-      [3, 'review', true, 'review r1 pass · fresh'],
-      [4, 'plan', false, 'unreadable ticket record (v3)'],
-    ])
-  })
-
   test('opening an item from a list remembers the list; from another item it pushes the history', () => {
     const list: Nav = { screen: 'items', itemId: null, history: [], siblings: [] }
     expect(navOpen(list, 'A', ['A', 'B', 'C'])).toEqual({ history: [], siblings: ['A', 'B', 'C'] })
@@ -739,7 +722,7 @@ describe('the strip, navigation, links and the ticket pass', () => {
 
   test('nothing here throws on a payload that is not an object', () => {
     const odd = [{ ...ev(1, 'loop.done', {}), payload: null as never }, { ...ev(2, 'loop.intent', {}), payload: 'x' as never }, { ...ev(3, 'item.note', {}), payload: [] as never }, ev(4, 'decision.asked', {})]
-    expect(() => [timelineOf(odd, 'all', 'newest'), dayGroups(timelineOf(odd, 'all', 'oldest')), stripOf(odd), ticketOf(odd), answeredAsksOf(odd), groupLinks(linksOf(odd))]).not.toThrow()
+    expect(() => [timelineOf(odd, 'all', 'newest'), dayGroups(timelineOf(odd, 'all', 'oldest')), stripOf(odd), ticketRecordOf(odd), answeredAsksOf(odd), groupLinks(linksOf(odd))]).not.toThrow()
   })
 })
 
