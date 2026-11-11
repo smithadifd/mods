@@ -2,6 +2,10 @@
 
 Release notes, newest first. Each mod carries its own version in its `plugin.json` and is tagged `<mod>--v<version>`; an entry names the mod it concerns.
 
+## Unreleased
+
+- ledger: the Item screen's Ticket section draws the /ticket skill's whole pass record from the `ticket-*:v2` records and the tried and stop events the skill writes: plan revisions newest first with each criterion checked against the latest review round on that revision, the plan's steps, skip reason, diff statement and open questions, the goes, the review rounds, the tried records and the stop stamps, the skill's close stamp marked `close`. An item with no ticket frame has no Ticket section. A frame of another kind or version, or a record missing a field the section draws, is listed as unreadable with its reason and never guessed. Checked against a real ledger 0.1.18 export of a closed ticket imported by the skill. No new ledger verbs: the pane still runs the same eight read verbs.
+
 ## ledger 0.2.0 — 2026-11-07
 
 The Item screen is rebuilt on the item's own events, with a section strip, a timeline, a Spec section, resume lines and children.

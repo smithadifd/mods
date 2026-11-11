@@ -769,7 +769,7 @@ export function headerLine(header: ItemHeader): string {
 
 /*
  * The item screen's layout: width bands, the section strip, the timeline (folded, grouped,
- * filtered, windowed), navigation between items, and the ticket notes. All pure.
+ * filtered, windowed), navigation between items, and the ticket record. All pure.
  */
 
 export type Band = 'narrow' | 'standard' | 'wide'
@@ -966,7 +966,7 @@ function countText(n: number): string {
 
 /**
  * One entry per section the item has: its hotkey and its count, `–` when empty. Ticket is only there when the
- * item carries framed ticket notes. With no events (a failed read) every count is `?`, never a false zero.
+ * item carries ticket frames (`ticketRecordOf`). With no events (a failed read) every count is `?`, never a false zero.
  */
 export function stripOf(events: readonly Event[] | null): StripEntry[] {
   const entries: StripEntry[] = []
@@ -981,9 +981,9 @@ export function stripOf(events: readonly Event[] | null): StripEntry[] {
     else if (one.section === 'timeline') count = countText(events.length)
     else if (one.section === 'spec') count = countText(specsOf(events).length)
     else if (one.section === 'ticket') {
-      const notes = ticketOf(events).length
-      if (notes === 0) continue
-      count = String(notes)
+      const record = ticketRecordOf(events)
+      if (record === null) continue
+      count = String(ticketCount(record))
     }
     entries.push({ ...one, count })
   }
@@ -1095,41 +1095,229 @@ export function isRecommended(option: AskOption, index: number, recommendation: 
   return wanted === String.fromCharCode(97 + (index % 26)) || wanted === option.label.trim().toLowerCase()
 }
 
-/* The /ticket pass record. */
+/*
+ * The Ticket section: the /ticket skill's pass record, projected from what the skill writes into the ledger.
+ * Its plan, decision and review records travel as item notes framed `ticket-<kind>:v2 <canonical JSON>`; its
+ * tried records and stop stamps are `item.tried` and `item.stopped` events whose payload `source` is `ticket`.
+ * The grammar is the skill's: a note whose text does not have the frame is an ordinary note. A frame of a kind
+ * or version other than the three v2 kinds, a body that is not a JSON object, or a record missing a field the
+ * section draws is shown as unreadable, with the frame and the reason, and never as a guessed value.
+ */
 
-export type TicketNote = { eventId: number; type: string; version: number; text: string; readable: boolean }
+/** A ticket record in a note: kind, format version, body (the skill's `ticket-([a-z]+):v([1-9][0-9]*) (.+)`, `.` matching newlines). */
+const TICKET_FRAME = /^ticket-([a-z]+):v([1-9][0-9]*) ([\s\S]+)$/
+const TICKET_KINDS = ['plan', 'decision', 'review']
+const TICKET_VERSION = 2
+const TICKET_PLAN_SCHEMA = 'ticket-plan-card/v2'
+/** The writer name the skill puts in every payload's `source`. */
+const TICKET_WRITER = 'ticket'
+/** The key the skill gives the stop stamp of its own atomic close. */
+const TICKET_CLOSE_STOP = /^ticket-close\/.+\/stop$/
 
-const FRAME = /^ticket-(plan|decision|review):v(\d+) ([\s\S]*)$/
-
-function ticketText(type: string, record: Payload): string {
-  if (type === 'plan') {
-    const criteria = Array.isArray(record.criteria) ? record.criteria.length : 0
-    return `plan${whole(record.revision) === null ? '' : ` r${whole(record.revision)}`}${criteria > 0 ? ` · ${criteria} criteria` : ''}`
-  }
-  if (type === 'decision') {
-    const parts = [text(record.gate), 'go', whole(record.plan_revision) === null ? '' : `r${whole(record.plan_revision)}`, text(record.who), text(record.verbatim) === '' ? '' : `"${text(record.verbatim)}"`]
-    return parts.filter(one => one !== '').join(' ')
-  }
-  return `review${whole(record.round) === null ? '' : ` r${whole(record.round)}`} ${text(record.verdict)}${text(record.reviewer) === '' ? '' : ` · ${text(record.reviewer)}`}`.trim()
+export type TicketCheck = { text: string; mark: 'passed' | 'failed' | 'unchecked'; round: number | null }
+export type TicketStep = { name: string; status: string; skip: string }
+export type TicketPlan = {
+  eventId: number
+  recordedAt: string
+  revision: number
+  pass: string
+  criteria: TicketCheck[]
+  steps: TicketStep[]
+  diffStatement: string
+  openQuestions: string[]
+}
+export type TicketGo = { eventId: number; gate: string; planRevision: number | null; who: string; verbatim: string; effect: string }
+export type TicketRound = {
+  eventId: number
+  round: number
+  verdict: string
+  planRevision: number
+  criteria: string[]
+  passed: number[]
+  reviewer: string
+  evidence: string
+  findings: string[]
+}
+export type TicketTried = { eventId: number; phase: string; what: string; outcome: string; evidence: string }
+export type TicketStop = { eventId: number; phase: string; point: string; skills: string[]; refs: string[]; close: boolean }
+export type TicketUnreadable = { eventId: number; frame: string; reason: string }
+export type TicketRecord = {
+  plans: TicketPlan[]
+  goes: TicketGo[]
+  rounds: TicketRound[]
+  tried: TicketTried[]
+  stops: TicketStop[]
+  unreadable: TicketUnreadable[]
 }
 
-/** Every note framed as a ticket pass record (`ticket-plan:v2 {json}`); a frame whose JSON cannot be read is kept and marked unreadable. */
-export function ticketOf(events: readonly Event[]): TicketNote[] {
-  const rows: TicketNote[] = []
-  for (const event of oldestFirstEvents(events)) {
-    if (event.kind !== 'item.note') continue
-    const match = FRAME.exec(text(payloadOf(event).text))
-    if (match === null) continue
-    const type = match[1]!
-    const version = Number(match[2])
-    let record: Payload | null = null
-    try {
-      const parsed: unknown = JSON.parse(match[3]!)
-      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) record = parsed as Payload
-    } catch {
-      record = null
-    }
-    rows.push({ eventId: event.id, type, version, text: record === null ? `unreadable ticket record (v${version})` : ticketText(type, record), readable: record !== null })
+/** Non-empty text, else null. */
+function filled(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null
+}
+
+/** A whole number of at least 1, else null. */
+function counting(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : null
+}
+
+/** A list holding only non-empty text, else null. */
+function texts(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every(one => filled(one) !== null) ? (value as string[]) : null
+}
+
+type Read<T> = { ok: true; value: T } | { ok: false; reason: string }
+
+function notReadable<T>(reason: string): Read<T> {
+  return { ok: false, reason }
+}
+
+function readPlan(event: Event, record: Payload): Read<Omit<TicketPlan, 'criteria'> & { criteria: string[] }> {
+  if (record.schema !== TICKET_PLAN_SCHEMA) return notReadable(`plan schema is ${typeof record.schema === 'string' ? record.schema : 'missing'}`)
+  const revision = counting(record.revision)
+  if (revision === null) return notReadable('no plan revision')
+  const criteria = texts(record.criteria)
+  if (criteria === null || criteria.length === 0) return notReadable('no criteria')
+  const pass = filled(record.pass)
+  if (pass === null) return notReadable('no pass')
+  if (!Array.isArray(record.steps)) return notReadable('no steps')
+  const steps: TicketStep[] = []
+  for (const one of record.steps) {
+    const step = typeof one === 'object' && one !== null && !Array.isArray(one) ? (one as Payload) : null
+    const name = step === null ? null : filled(step.name)
+    const status = step === null ? null : filled(step.status)
+    if (step === null || name === null || status === null) return notReadable('a step without a name or status')
+    if (step.skip !== undefined && filled(step.skip) === null) return notReadable(`step ${name} has a skip that is not text`)
+    steps.push({ name, status, skip: text(step.skip) })
   }
-  return rows
+  const openQuestions = texts(record.open_questions)
+  if (openQuestions === null) return notReadable('no open questions list')
+  if (record.diff_statement !== undefined && filled(record.diff_statement) === null) return notReadable('a diff statement that is not text')
+  return { ok: true, value: { eventId: event.id, recordedAt: event.recordedAt, revision, pass, criteria, steps, diffStatement: text(record.diff_statement), openQuestions } }
+}
+
+function readDecision(event: Event, record: Payload): Read<TicketGo> {
+  const who = filled(record.who)
+  if (who === null) return notReadable('no who')
+  const verbatim = filled(record.verbatim)
+  if (verbatim === null) return notReadable('no verbatim')
+  const effect = filled(record.effect)
+  if (effect === null) return notReadable('no effect')
+  if (record.gate === undefined) return { ok: true, value: { eventId: event.id, gate: '', planRevision: null, who, verbatim, effect } }
+  if (record.gate !== 'plan' && record.gate !== 'outward') return notReadable(`unknown gate ${typeof record.gate === 'string' ? record.gate : '?'}`)
+  const planRevision = counting(record.plan_revision)
+  if (planRevision === null) return notReadable('a go without a plan revision')
+  return { ok: true, value: { eventId: event.id, gate: record.gate, planRevision, who, verbatim, effect } }
+}
+
+function readReview(event: Event, record: Payload): Read<TicketRound> {
+  const round = counting(record.round)
+  if (round === null) return notReadable('no round')
+  if (record.verdict !== 'pass' && record.verdict !== 'changes') return notReadable('a verdict other than pass or changes')
+  const planRevision = counting(record.plan_revision)
+  if (planRevision === null) return notReadable('no plan revision')
+  const criteria = texts(record.criteria)
+  if (criteria === null || criteria.length === 0) return notReadable('no criteria')
+  const passed = record.passed
+  if (!Array.isArray(passed) || !passed.every(one => typeof one === 'number' && Number.isInteger(one) && one >= 0 && one < criteria.length) || new Set(passed).size !== passed.length) {
+    return notReadable('passed is not a list of criterion indices')
+  }
+  const findings = texts(record.findings)
+  if (findings === null) return notReadable('no findings list')
+  const reviewer = filled(record.reviewer)
+  if (reviewer === null) return notReadable('no reviewer')
+  const evidence = filled(record.evidence)
+  if (evidence === null) return notReadable('no evidence')
+  return { ok: true, value: { eventId: event.id, round, verdict: record.verdict, planRevision, criteria, passed: passed as number[], reviewer, evidence, findings } }
+}
+
+/** Each criterion of a plan revision, checked against the latest review round of that revision whose criterion at the same place has the same text. */
+function checksOf(criteria: readonly string[], revision: number, rounds: readonly TicketRound[]): TicketCheck[] {
+  const latest = rounds.filter(one => one.planRevision === revision).sort((a, b) => b.eventId - a.eventId)[0]
+  return criteria.map((criterion, index) => {
+    if (latest === undefined || latest.criteria[index] !== criterion) return { text: criterion, mark: 'unchecked', round: null }
+    return { text: criterion, mark: latest.passed.includes(index) ? 'passed' : 'failed', round: latest.round }
+  })
+}
+
+/**
+ * The item's ticket record, or null when no note carries a ticket frame: an item the /ticket skill never wrote has
+ * no Ticket section, not an empty one. Plan revisions come newest first; goes, rounds, tried and stops in the
+ * order they were written. Tried records and stop stamps count only when the skill wrote them (`source: ticket`).
+ */
+export function ticketRecordOf(events: readonly Event[]): TicketRecord | null {
+  const plans: (Omit<TicketPlan, 'criteria'> & { criteria: string[] })[] = []
+  const record: TicketRecord = { plans: [], goes: [], rounds: [], tried: [], stops: [], unreadable: [] }
+  let framed = false
+  for (const event of oldestFirstEvents(events)) {
+    const p = payloadOf(event)
+    if (event.kind === 'item.note') {
+      const match = TICKET_FRAME.exec(text(p.text))
+      if (match === null) continue
+      framed = true
+      const kind = match[1]!
+      const version = Number(match[2])
+      const frame = `ticket-${kind}:v${version}`
+      if (!TICKET_KINDS.includes(kind)) {
+        record.unreadable.push({ eventId: event.id, frame, reason: 'a record kind the ticket skill does not write' })
+        continue
+      }
+      if (version !== TICKET_VERSION) {
+        record.unreadable.push({ eventId: event.id, frame, reason: `format version ${version} is not one this pane reads` })
+        continue
+      }
+      let body: unknown
+      try {
+        body = JSON.parse(match[3]!)
+      } catch {
+        record.unreadable.push({ eventId: event.id, frame, reason: 'the body is not JSON' })
+        continue
+      }
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        record.unreadable.push({ eventId: event.id, frame, reason: 'the body is not a JSON object' })
+        continue
+      }
+      const read = kind === 'plan' ? readPlan(event, body as Payload) : kind === 'decision' ? readDecision(event, body as Payload) : readReview(event, body as Payload)
+      if (!read.ok) {
+        record.unreadable.push({ eventId: event.id, frame, reason: read.reason })
+        continue
+      }
+      if (kind === 'plan') plans.push(read.value as Omit<TicketPlan, 'criteria'> & { criteria: string[] })
+      else if (kind === 'decision') record.goes.push(read.value as TicketGo)
+      else record.rounds.push(read.value as TicketRound)
+    } else if (event.kind === 'item.tried' && p.source === TICKET_WRITER) {
+      const what = filled(p.what)
+      const phase = filled(p.phase)
+      if (what === null || phase === null) record.unreadable.push({ eventId: event.id, frame: event.kind, reason: 'a tried record without what or phase' })
+      else record.tried.push({ eventId: event.id, phase, what, outcome: text(p.outcome), evidence: text(p.evidence) })
+    } else if (event.kind === 'item.stopped' && p.source === TICKET_WRITER) {
+      const point = filled(p.point)
+      const phase = filled(p.phase)
+      if (point === null || phase === null) record.unreadable.push({ eventId: event.id, frame: event.kind, reason: 'a stop stamp without point or phase' })
+      else record.stops.push({ eventId: event.id, phase, point, skills: strings(p.skills), refs: strings(p.refs), close: phase === 'close' && TICKET_CLOSE_STOP.test(event.idempotencyKey) })
+    }
+  }
+  if (!framed) return null
+  record.plans = plans.reverse().map(plan => ({ ...plan, criteria: checksOf(plan.criteria, plan.revision, record.rounds) }))
+  return record
+}
+
+/** How many rows the Ticket section draws: the strip's count. */
+export function ticketCount(record: TicketRecord): number {
+  return record.plans.length + record.goes.length + record.rounds.length + record.tried.length + record.stops.length + record.unreadable.length
+}
+
+/** `plan go · plan r1 · the person: "Go"`, or `decision · the person: <effect>` for a decision that is not a go. */
+export function ticketGoLine(go: TicketGo): string {
+  if (go.gate === '') return `decision · ${go.who}: ${go.effect}`
+  return `${go.gate} go · plan r${go.planRevision} · ${go.who}: "${go.verbatim}"`
+}
+
+/** `r1 pass · plan r1 · 4 of 4 criteria · <reviewer>`. */
+export function ticketRoundLine(round: TicketRound): string {
+  return `r${round.round} ${round.verdict} · plan r${round.planRevision} · ${round.passed.length} of ${round.criteria.length} criteria · ${round.reviewer}`
+}
+
+/** `orient complete · research complete · plan skipped · build pending`: each step and its status, in the plan's order. */
+export function ticketStepsLine(steps: readonly TicketStep[]): string {
+  return steps.map(step => `${step.name} ${step.status}`).join(' · ')
 }

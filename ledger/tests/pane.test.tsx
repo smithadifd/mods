@@ -4,6 +4,7 @@ import type { MockClock, TestBody } from 'claude-code/testing'
 import type { View } from '../types'
 import { READ_VERBS, parseCard, parseEvents } from '../hooks/cli'
 import { draw } from '../hooks/screens'
+import { LEDGER_0_1_18_TICKET_EXPORT_STDOUT } from './ledger-0.1.18-ticket-export'
 import type { Act, Ui } from '../hooks/screens'
 
 const PANE = {
@@ -786,13 +787,78 @@ describe('the item screen: strip, Now and the timeline', () => {
     await ui.unmount()
   })
 
-  test('the strip carries Ticket, on g, when the item has framed ticket notes', async ($, on) => {
-    await openL1($, on, loopReply(loopLog([stamped(20, 'item.note', { text: 'ticket-review:v2 {"round":1,"verdict":"pass","reviewer":"fresh"}' }, '2026-10-30T13:00:00Z'), stamped(21, 'item.note', { text: 'ticket-plan:v9 {broken' }, '2026-10-30T13:01:00Z')])))
+  test('the strip carries Ticket, on g, when the item has ticket frames, and a frame of an unknown version shows as unreadable', async ($, on) => {
+    const round = { round: 1, verdict: 'pass', plan_revision: 1, criteria: ['it works'], passed: [0], findings: ['a nit'], reviewer: 'fresh', evidence: 'work/r.json' }
+    await openL1($, on, loopReply(loopLog([stamped(20, 'item.note', { text: `ticket-review:v2 ${JSON.stringify(round)}` }, '2026-10-30T13:00:00Z'), stamped(21, 'item.note', { text: 'ticket-plan:v9 {"revision":4}' }, '2026-10-30T13:01:00Z')])))
     const ui = await $.ui.mount(paneAt(100))
     await ui.press({ key: 'refresh' })
     expect((await ui.find({ key: 'strip-ticket' }))?.props).toMatchObject({ label: 'Ticket 2', hotkey: 'g' })
-    expect((await ui.find({ key: 'ticket-20' }))?.text).toContain('review r1 pass · fresh')
-    expect((await ui.find({ key: 'ticket-21' }))?.text).toContain('unreadable ticket record (v9)')
+    expect((await ui.find({ key: 'ticket-round-20' }))?.text).toContain('r1 pass · plan r1 · 1 of 1 criteria · fresh')
+    expect((await ui.find({ key: 'ticket-finding-20-0' }))?.text).toContain('- a nit')
+    expect((await ui.find({ key: 'ticket-unreadable-21' }))?.text).toContain('ticket-plan:v9 unreadable: format version 9 is not one this pane reads')
+    // The unreadable frame is not drawn as a plan revision, and the rest of the screen stands.
+    expect(await ui.find({ key: 'ticket-plan-21' })).toBe(undefined)
+    expect(await ui.find({ key: 'spec-section' })).toBeDefined()
+    expect((await ui.find({ key: 'strip-timeline' }))?.props.label).toBe('Timeline 11')
+    await ui.unmount()
+  })
+
+  test('the Ticket section draws a closed ticket from a captured ledger 0.1.18 export', async ($, on) => {
+    const captured = { exitCode: 0, stdout: LEDGER_0_1_18_TICKET_EXPORT_STDOUT, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+    await openL1($, on, loopReply(captured))
+    const ui = await $.ui.mount(paneAt(160))
+    await ui.press({ key: 'refresh' })
+    expect((await ui.find({ key: 'strip-ticket' }))?.props).toMatchObject({ label: 'Ticket 12', hotkey: 'g' })
+    expect((await ui.find({ key: 'section-ticket' }))?.text).toContain('Ticket')
+    // The plan revision, current, with each criterion checked by review round 1.
+    expect((await ui.find({ key: 'ticket-plan-line-3' }))?.text).toMatch(/^r1 · current · \w+ \d+ · pass 5a1c0de5a1c0de01 #3$/)
+    expect((await ui.find({ key: 'ticket-criterion-3-0' }))?.text).toBe('  ✓ Raise zod in the frontend to at least 4.6.6. · round 1')
+    expect((await ui.find({ key: 'ticket-criterion-3-3' }))?.text).toBe('  ✓ No deploy. · round 1')
+    expect((await ui.find({ key: 'ticket-steps-3' }))?.text).toBe('  steps: orient complete · research complete · plan skipped · build pending · review pending · outward pending')
+    expect((await ui.find({ key: 'ticket-skip-3-plan' }))?.text).toBe('  plan skipped: a one-package lockfile-only bump with no design choice')
+    // The goes and the review round.
+    expect((await ui.find({ key: 'ticket-go-4' }))?.text).toBe('plan go · plan r1 · the person: "Go" #4')
+    expect((await ui.find({ key: 'ticket-go-5' }))?.text).toBe('outward go · plan r1 · the person: "Go" #5')
+    expect((await ui.find({ key: 'ticket-round-6' }))?.text).toContain('r1 pass · plan r1 · 4 of 4 criteria · fresh-context reviewer #6')
+    // Tried records and stop stamps, the last the close.
+    expect((await ui.find({ key: 'ticket-tried-8' }))?.text).toContain('[build] builder-core dispatch #8')
+    expect((await ui.find({ key: 'ticket-tried-8' }))?.text).toContain('outcome: refused: agent worktree isolation needs a git cwd')
+    for (const id of [7, 8, 9, 10, 11]) expect(await ui.find({ key: `ticket-tried-${id}` })).toBeDefined()
+    expect((await ui.find({ key: 'ticket-stop-12' }))?.text).toContain('stop [plan] Waiting at plan go for plan revision 1. #12')
+    expect((await ui.find({ key: 'ticket-stop-14' }))?.text).toContain('close [close] Merged example/example-app#423')
+    expect((await ui.find({ key: 'ticket-stop-14' }))?.text).toContain('next skills: deploy')
+    expect(await ui.findAll({ type: 'Text', text: /unreadable:/ })).toHaveLength(0)
+    await ui.unmount()
+  })
+
+  test('an item with no ticket frames has no Ticket section, even with tried and stop stamps the skill wrote', async ($, on) => {
+    const log = loopLog([
+      stamped(20, 'item.tried', { what: 'w', phase: 'build', source: 'ticket' }, '2026-10-30T13:00:00Z'),
+      stamped(21, 'item.stopped', { point: 'p', phase: 'plan', skills: [], refs: [], source: 'ticket' }, '2026-10-30T13:01:00Z'),
+      stamped(22, 'item.note', { text: 'ticket-plan:v02 {}' }, '2026-10-30T13:02:00Z'),
+    ])
+    await openL1($, on, loopReply(log))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect(await ui.find({ key: 'strip-ticket' })).toBe(undefined)
+    expect(await ui.find({ key: 'section-ticket' })).toBe(undefined)
+    expect(await ui.find({ key: 'ticket' })).toBe(undefined)
+    expect((await ui.find({ key: 'strip-timeline' }))?.props.label).toBe('Timeline 12')
+    await ui.unmount()
+  })
+
+  test('the pane runs only the read verbs while it draws the Ticket section', async ($, on) => {
+    const seen: string[][] = []
+    const captured = { exitCode: 0, stdout: LEDGER_0_1_18_TICKET_EXPORT_STDOUT, stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+    await openL1($, on, loopReply(captured), [], seen)
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    expect(await ui.find({ key: 'ticket-go-4' })).toBeDefined()
+    expect(seen.some(argv => argv.includes('export-item'))).toBe(true)
+    for (const argv of seen) {
+      expect(argv[1]).toBe('--json')
+      expect((READ_VERBS as readonly string[]).includes(argv[2] ?? '')).toBe(true)
+    }
     await ui.unmount()
   })
 
