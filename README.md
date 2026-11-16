@@ -48,21 +48,31 @@ The pane never opens the database file. It runs the ledger CLI with `--json`, re
 
 ## Install
 
-You need Claude Code 2.1.275 or later and `git`. At the prompt of a terminal session:
-
-```text
-/plugin install ledger --marketplace smithadifd/mods
-```
-
-Answer `y` to add the marketplace, pick the scope (user, to have it in every session), and set the options when asked. From a shell, the same install is:
+You need Claude Code 2.1.275 or later and `git`. Install a release by naming its tag, so what you get is the code that was tagged and not whatever `main` holds on the day. Each release of a mod is tagged `<mod>--v<version>` (the tags are listed in [CHANGELOG.md](CHANGELOG.md)); the current `ledger` release is `ledger--v0.3.0`. From a shell:
 
 ```sh
-claude plugin install ledger --marketplace smithadifd/mods
+claude plugin marketplace add https://github.com/smithadifd/mods.git#ledger--v0.3.0
+claude plugin install ledger@mods
 ```
 
-or, in two steps, `claude plugin marketplace add smithadifd/mods` then `claude plugin install ledger@mods`. Update with `claude plugin update ledger`. In the desktop app, where `/plugin` does not run, click + next to the prompt box, then Plugins, Add marketplace with `smithadifd/mods`, then Add plugin.
+Set the options when asked (pick the scope too: user, to have it in every session). At the prompt of a terminal session, the same two steps are `/plugin marketplace add https://github.com/smithadifd/mods.git#ledger--v0.3.0` then `/plugin install ledger@mods`. In the desktop app, where `/plugin` does not run, click + next to the prompt box, then Plugins, Add marketplace with `https://github.com/smithadifd/mods.git#ledger--v0.3.0`, then Add plugin.
+
+Without the `#ledger--v0.3.0` the marketplace follows `main`, which can be ahead of the last tag and then installs code no release has carried. A marketplace added at a tag stays on that tag. To move to a newer release, remove the marketplace (see Uninstall) and add it again at the newer tag.
 
 To run a mod from a clone instead, with a reload on every save, start a session with `claude --plugin-dir ~/code/mods/ledger`, or name the folder in `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of `~/.claude/settings.json`; the mod's options then live under `pluginConfigs.ledger.options` in the same file. Use one route, not both: a session that loads the same mod twice refuses the second `/ledger`.
+
+## Uninstall
+
+Remove the plugin, then the marketplace that offered it:
+
+```sh
+claude plugin uninstall ledger@mods
+claude plugin marketplace remove mods
+```
+
+`plugin uninstall` also removes the plugin's data directory; add `--keep-data` to keep it. Neither command touches the ledger CLI or your ledger database: the mod only ever read them.
+
+If you ran the mod from a clone instead, stop passing `--plugin-dir`, or take the folder out of `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of `~/.claude/settings.json`, and delete the `pluginConfigs.ledger` block from the same file.
 
 ## The ledger mod
 
@@ -119,7 +129,7 @@ No hard-coded paths: options and the environment carry what differs between mach
 
 ## How it is built
 
-- **Tests beside the code.** Each mod's `tests/` run under `claude plugin test` against the engine itself, with the mod's hooks above the test's own `$`. The pane's tests mount it, press its buttons, type into its field and read the tree back, on the terminal and desktop surfaces alike, and seed a value an earlier version stored to show it is declined. The `ledger` mod has 205 tests across its CLI parsing, its model and its pane.
+- **Tests beside the code.** Each mod's `tests/` run under `claude plugin test` against the engine itself, with the mod's hooks above the test's own `$`. The pane's tests mount it, press its buttons, type into its field and read the tree back, on the terminal and desktop surfaces alike, and seed a value an earlier version stored to show it is declined. The `ledger` mod has 234 tests across its CLI parsing, its model and its pane.
 - **The engine's own declarations.** `tsc -p <mod>` type-checks against the API as the engine wrote it beside the mod, under `strict` and `noUncheckedIndexedAccess`.
 - **CI runs what it can.** On every push and pull request: `claude plugin validate --strict` on the marketplace and on each mod, then `claude plugin test` on each mod, under the Claude Code version the mods were built against. The type-check runs on a developer's machine: the declarations it needs are written only by an interactive session, so a runner has none to check against.
 - **Read-only by construction.** A mod that reads a person's data runs a fixed list of read commands and nothing else. The list is code, and a test tries a write.
