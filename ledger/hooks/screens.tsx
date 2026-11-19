@@ -1,6 +1,7 @@
 import type { Elements, RenderElement } from 'claude-code'
 
 import type { AskOption, Decision, Detail, Event, Item, Line, Screen, Spec, TimelineOrder, View } from '../types'
+import type { Cli } from './cli'
 import type { Band, ClaimRow, Nav, TicketCheck, TimelineRow } from './model'
 import {
   SECTION_KEY_PREFIX,
@@ -27,6 +28,7 @@ import {
   filterDecisions,
   electionsOf,
   filterItems,
+  isPlainId,
   firstOpenable,
   groupBySeat,
   fit,
@@ -117,7 +119,8 @@ export type Act = {
 }
 
 /** The room the pane has (columns, window rows, the window's offset into the body), and the moment ages are counted from. */
-export type Frame = { width: number; rows: number; now: number; offset: number }
+/** What a draw knows about the screen and about how the pane reaches the ledger (`cli`, for the release commands it prints). */
+export type Frame = { width: number; rows: number; now: number; offset: number; cli: Cli }
 
 const TABS: readonly { screen: Screen; label: string; hotkey: string }[] = [
   { screen: 'home', label: 'Home', hotkey: 'h' },
@@ -259,7 +262,7 @@ function claimSection(ui: Ui, prefix: string, title: string, note: string, rows:
         <Box key={`${prefix}-${one.itemId}`} gap={2} flexWrap="wrap">
           <Text bold>{one.itemId}</Text>
           <Text dimColor>{one.when}</Text>
-          <Text>{one.command ?? 'no command shown: the id is not a plain word'}</Text>
+          <Text>{one.command ?? (isPlainId(one.itemId) ? 'no command shown: the database path is not known' : 'no command shown: the id is not a plain word')}</Text>
         </Box>
       ))}
       {rows.length > CLAIM_ROWS && (
@@ -289,9 +292,9 @@ function home(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
   const verify = view.verify
   const search = view.doctor?.search ?? null
   const tone = search === null ? 'ok' : searchTone(search)
-  const hint = search === null ? null : searchHint(search)
-  const lapsed = expiredRows(view.doctor, frame.now)
-  const stale = staleRows(view.doctor, frame.now)
+  const hint = search === null ? null : searchHint(search, Math.max(20, frame.width - 2))
+  const lapsed = expiredRows(view.doctor, frame.now, frame.cli)
+  const stale = staleRows(view.doctor, frame.now, frame.cli)
 
   return (
     <Box flexDirection="column">
@@ -317,7 +320,7 @@ function home(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
             </Text>
           </Box>
           {hint !== null && (
-            <Text dimColor>{cut(hint, Math.max(20, frame.width - 2))}</Text>
+            <Text dimColor>{hint}</Text>
           )}
         </Box>
       )}

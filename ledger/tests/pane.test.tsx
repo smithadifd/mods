@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { MockClock, TestBody } from 'claude-code/testing'
 
 import type { View } from '../types'
-import { READ_VERBS, parseCard, parseEvents } from '../hooks/cli'
+import { READ_VERBS, cliFrom, parseCard, parseEvents } from '../hooks/cli'
 import { draw } from '../hooks/screens'
 import { LEDGER_0_1_18_TICKET_EXPORT_STDOUT } from './ledger-0.1.18-ticket-export'
 import { LEDGER_0_1_20_DOCUMENTS_EXPORT_ITEM_STDOUT } from './ledger-0.1.20-documents'
@@ -923,7 +923,7 @@ describe('the item screen: strip, Now and the timeline', () => {
       verify: null,
       verifying: false,
     }
-    const found = nodes(draw(FAKE, view, act, { width: 100, rows: 30, now: Date.now(), offset: 0 }))
+    const found = nodes(draw(FAKE, view, act, { width: 100, rows: 30, now: Date.now(), offset: 0, cli: cliFrom({}) }))
     for (const [name, hotkey] of [['now', 'n'], ['decisions', 'e'], ['links', 'l'], ['timeline', 't'], ['spec', 'p'], ['documents', 'm']] as const) {
       const button = found.find(one => one.props.key === `strip-${name}`)
       expect(button?.props.hotkey).toBe(hotkey)
@@ -2046,10 +2046,10 @@ describe('Home: the search index as information, and the claims that need lettin
     ]
     const ui = await homeWith($, on, { ...DOCTOR, expired_claims: { status: 'expired', items } })
     expect((await ui.find({ key: 'expired-claims-header' }))?.text).toContain('Expired claims')
-    expect(await ui.find({ type: 'Text', text: /^ledger state A1 --status open$/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^ledger state rm-SL33 --status open$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ledger --db \/db\/home\.db state A1 --status open$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ledger --db \/db\/home\.db state rm-SL33 --status open$/ })).toBeDefined()
     // A row is the item id, how long ago the lease ended, then the command.
-    expect((await ui.find({ key: 'expired-A1' }))?.text).toMatch(/A1[\s\S]*lease ended [\s\S]*ledger state A1 --status open/)
+    expect((await ui.find({ key: 'expired-A1' }))?.text).toMatch(/A1[\s\S]*lease ended [\s\S]*ledger --db \/db\/home\.db state A1 --status open/)
     expect((await ui.find({ type: 'Text', text: /^lease ended \d+[a-z]+ ago$/ }))?.props.dimColor).toBe(true)
     // The tile that opens Needs you is still there, and no stale section is drawn without the key.
     expect(await ui.find({ key: 'tile-expired' })).toBeDefined()
@@ -2065,13 +2065,79 @@ describe('Home: the search index as information, and the claims that need lettin
     await ui.unmount()
   })
 
+  test('with no database path known there is no command line, not one that would fall back to LEDGER_DB', async ($, on) => {
+    const items = [{ item_id: 'A1', holder: 'seat-9', expires_at: '2026-11-05T00:00:00Z' }]
+    const { path: _path, ...noPath } = DOCTOR
+    const ui = await homeWith($, on, { ...noPath, expired_claims: { status: 'expired', items } })
+    expect((await ui.find({ key: 'expired-A1' }))?.text).toContain('A1')
+    expect(await ui.find({ type: 'Text', text: /no command shown: the database path is not known/ })).toBeDefined()
+    expect(await ui.findAll({ type: 'Text', text: /state A1/ })).toEqual([])
+    await ui.unmount()
+  })
+
+  test('the printed release command is the pane\'s own invocation: its configured words, folder and database', () => {
+    const doctor = { path: '/data/my notes/home.db', schemaVersion: 9, search: { status: 'current', behind: 0 }, expiredClaims: [{ itemId: 'A1', holder: 'h', expiresAt: '2026-11-05T00:00:00Z' }] }
+    const view: View = {
+      screen: 'home',
+      isOpen: true,
+      loading: false,
+      error: null,
+      loadedAt: null,
+      doctor,
+      items: [],
+      ready: [],
+      decisions: [],
+      typeFilter: 'all',
+      statusFilter: 'all',
+      standingFilter: 'all',
+      page: 0,
+      itemId: null,
+      item: null,
+      itemLoading: false,
+      itemError: null,
+      itemReadAt: null,
+      siblings: [],
+      history: [],
+      timelineOrder: 'newest',
+      timelineKind: 'all',
+      openEvents: [],
+      openSpecs: [],
+      expanded: null,
+      query: '',
+      hits: [],
+      searched: null,
+      verify: null,
+      verifying: false,
+    }
+    const act = new Proxy({}, { get: () => () => undefined }) as Act
+    const cli = cliFrom({ command: 'python3 -m ledger', folder: '/my lib', db: '/opt/other.db' })
+    const found = nodes(draw(FAKE, view, act, { width: 100, rows: 30, now: Date.parse('2026-11-18T12:00:00Z'), offset: 0, cli }))
+    const words = (one: Node): string => ([] as unknown[]).concat(one.props.children).join('')
+    const printed = found.filter(one => one.type === 'Text' && /state A1/.test(words(one))).map(words)
+    expect(printed).toEqual(["cd -- '/my lib' && python3 -m ledger --db '/data/my notes/home.db' state A1 --status open"])
+  })
+
+  test('at 80 columns the search hint keeps its explanation when a reason holds a long path', async ($, on) => {
+    const reasons = ['2 source(s) changed: /Users/someone/work/a/very/long/path/to/the/notes/folder/that/goes/on/and/on/file.md']
+    engine(on, [], argv => (argv.includes('doctor') ? ok({ ...DOCTOR, search: { status: 'stale', severity: 'info', reasons, new_events: 0 } }) : answer(argv)))
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command(''))
+    const ui = await $.ui.mount(paneAt(80))
+    await ui.press({ key: 'refresh' })
+    const hint = await ui.find({ type: 'Text', text: /the next search brings it up to date/ })
+    expect(hint?.text.endsWith('; the next search brings it up to date')).toBe(true)
+    expect(hint?.text).toContain('2 source(s) changed: /Users/')
+    expect(Array.from(hint?.text ?? '').length).toBeLessThanOrEqual(78)
+    await ui.unmount()
+  })
+
   test('stale claims are listed when doctor carries the key, in the same grammar', async ($, on) => {
     const items = [{ item_id: 'S1', holder: 'seat-3', claimed_at: '2026-11-01T00:00:00Z', age_seconds: 1_555_200 }]
     const ui = await homeWith($, on, { ...DOCTOR, stale_claims: { status: 'ok', items } })
     expect((await ui.find({ key: 'stale-claims-header' }))?.text).toContain('Stale claims')
-    expect(await ui.find({ type: 'Text', text: /^ledger state S1 --status open$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ledger --db \/db\/home\.db state S1 --status open$/ })).toBeDefined()
     expect((await ui.find({ type: 'Text', text: /^claimed \d+[a-z]+ ago, no lease$/ }))?.props.dimColor).toBe(true)
-    expect((await ui.find({ key: 'stale-S1' }))?.text).toMatch(/S1[\s\S]*claimed [\s\S]*ledger state S1 --status open/)
+    expect((await ui.find({ key: 'stale-S1' }))?.text).toMatch(/S1[\s\S]*claimed [\s\S]*ledger --db \/db\/home\.db state S1 --status open/)
     // No expired claims here, so no expired section.
     expect(await ui.find({ key: 'expired-claims' })).toBe(undefined)
     await ui.unmount()
