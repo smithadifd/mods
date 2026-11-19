@@ -22,8 +22,14 @@ export type Item = {
 export type Doctor = {
   path: string
   schemaVersion: number
-  search: { status: string; behind: number }
+  /** `severity` and `reasons` are present only when the ledger's `doctor --json` carries them. */
+  search: { status: string; behind: number; severity?: 'ok' | 'info' | 'warn'; reasons?: string[] }
   expiredClaims: { itemId: string; holder: string; expiresAt: string }[]
+  /**
+   * Lease-less claims older than 7 days. Present only when doctor's JSON carries `stale_claims`; a ledger that does
+   * not emit the key leaves this out, and the pane draws nothing for it.
+   */
+  staleClaims?: { itemId: string; holder: string; claimedAt: string; ageSeconds: number | null }[]
 }
 
 /** One decision record from `ledger decisions`. */

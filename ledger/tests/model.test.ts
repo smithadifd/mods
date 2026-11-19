@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { Event, Item } from '../types'
+import type { Doctor, Event, Item } from '../types'
+import { expiredRows, releaseCommand, searchHint, searchTone, staleRows } from '../hooks/model'
 import {
   ageOf,
   answeredAsksOf,
@@ -922,5 +923,88 @@ describe('claimed items by seat (model)', () => {
     const grouped = groupBySeat(items)
     const placed = [...grouped.seats.flatMap(group => group.items), ...grouped.unlabelled].map(one => one.id)
     expect(placed.sort()).toEqual(['A1', 'B1', 'N1'])
+  })
+})
+
+describe('Home: the search index as information, and the claims that need letting go', () => {
+  const NOW = Date.parse('2026-11-18T12:00:00Z')
+  const doctor = (extra: Partial<Doctor> = {}, search: Doctor['search'] = { status: 'current', behind: 0 }): Doctor => ({ path: '/db', schemaVersion: 9, search, expiredClaims: [], ...extra })
+
+  test('the index tone follows the ledger\'s severity, or the one its status implies', () => {
+    expect(searchTone({ status: 'current', behind: 0 })).toBe('ok')
+    for (const status of ['behind', 'stale', 'missing']) expect(searchTone({ status, behind: 0 })).toBe('info')
+    expect(searchTone({ status: 'unknown', behind: 0 })).toBe('warn')
+    expect(searchTone({ status: 'weird', behind: 0 })).toBe('warn')
+    // A severity doctor carries wins over the status.
+    expect(searchTone({ status: 'stale', behind: 0, severity: 'warn' })).toBe('warn')
+    expect(searchTone({ status: 'unknown', behind: 0, severity: 'info' })).toBe('info')
+  })
+
+  test('the hint names doctor\'s reasons for a stale index, and says what each other information state waits on', () => {
+    expect(searchHint({ status: 'stale', behind: 0, severity: 'info', reasons: ['1 source(s) added: /r/a.md', '2 source(s) changed: /r/b.md'] })).toBe(
+      '1 source(s) added: /r/a.md; 2 source(s) changed: /r/b.md; the next search brings it up to date',
+    )
+    // An older ledger names no reasons: the hint says what stale means.
+    expect(searchHint({ status: 'stale', behind: 0 })).toBe('sources added or changed since the index was built; the next search brings it up to date')
+    expect(searchHint({ status: 'behind', behind: 3 })).toBe('new events since the index was built; the next search indexes them')
+    expect(searchHint({ status: 'missing', behind: 0 })).toBe('no index built yet; the next search builds it')
+    // A current index and a real fault get no hint: the first needs none, the second is not information.
+    expect(searchHint({ status: 'current', behind: 0 })).toBe(null)
+    expect(searchHint({ status: 'unknown', behind: 0, reasons: ['config is not JSON'] })).toBe(null)
+  })
+
+  test('the release command is the ledger\'s own state verb, for a plain id only', () => {
+    expect(releaseCommand('A1')).toBe('ledger state A1 --status open')
+    expect(releaseCommand('it-1a2b3c4d5e6f')).toBe('ledger state it-1a2b3c4d5e6f --status open')
+    expect(releaseCommand('rm-SL33')).toBe('ledger state rm-SL33 --status open')
+    for (const bad of ['', ' ', 'a b', 'a;b', 'a|b', '$(x)', '`x`', 'a&b', '-x', 'a\nb', 'a"b', "a'b", 'a>b', 'a\\b']) expect(releaseCommand(bad)).toBe(null)
+  })
+
+  test('an expired claim is its id, how long ago the lease ended, and the release command', () => {
+    const rows = expiredRows(
+      doctor({
+        expiredClaims: [
+          { itemId: 'A1', holder: 'seat-9', expiresAt: '2026-11-15T12:00:00Z' },
+          { itemId: 'B2', holder: 'seat-1', expiresAt: '' },
+          { itemId: 'C3', holder: 'seat-1', expiresAt: 'not a time' },
+          { itemId: 'D4', holder: 'seat-1', expiresAt: '2026-11-18T11:59:50Z' },
+          { itemId: '', holder: 'seat-1', expiresAt: '2026-11-15T12:00:00Z' },
+          { itemId: 'a b', holder: 'seat-1', expiresAt: '2026-11-15T12:00:00Z' },
+        ],
+      }),
+      NOW,
+    )
+    expect(rows).toEqual([
+      { itemId: 'A1', when: 'lease ended 3d ago', command: 'ledger state A1 --status open' },
+      { itemId: 'B2', when: 'lease ended', command: 'ledger state B2 --status open' },
+      { itemId: 'C3', when: 'lease ended', command: 'ledger state C3 --status open' },
+      { itemId: 'D4', when: 'lease ended just now', command: 'ledger state D4 --status open' },
+      { itemId: 'a b', when: 'lease ended 3d ago', command: null },
+    ])
+    expect(expiredRows(null, NOW)).toEqual([])
+    expect(expiredRows(doctor(), NOW)).toEqual([])
+  })
+
+  test('a stale claim is its id, how long ago it was claimed with no lease, and the release command; an absent list is no rows', () => {
+    const rows = staleRows(
+      doctor({
+        staleClaims: [
+          { itemId: 'S1', holder: 'seat-3', claimedAt: '2026-11-08T12:00:00Z', ageSeconds: null },
+          { itemId: 'S2', holder: 'seat-3', claimedAt: '', ageSeconds: 9 * 86_400 },
+          { itemId: 'S3', holder: 'seat-3', claimedAt: '', ageSeconds: null },
+          { itemId: '', holder: 'seat-3', claimedAt: '', ageSeconds: null },
+        ],
+      }),
+      NOW,
+    )
+    expect(rows).toEqual([
+      { itemId: 'S1', when: 'claimed 10d ago, no lease', command: 'ledger state S1 --status open' },
+      { itemId: 'S2', when: 'claimed 9d ago, no lease', command: 'ledger state S2 --status open' },
+      { itemId: 'S3', when: 'claimed, no lease', command: 'ledger state S3 --status open' },
+    ])
+    // The current ledger sends no stale_claims: no key, no rows, no throw.
+    expect(staleRows(doctor(), NOW)).toEqual([])
+    expect(staleRows(null, NOW)).toEqual([])
+    expect(staleRows(doctor({ staleClaims: [] }), NOW)).toEqual([])
   })
 })

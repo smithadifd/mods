@@ -1,7 +1,7 @@
 import type { Elements, RenderElement } from 'claude-code'
 
 import type { AskOption, Decision, Detail, Event, Item, Line, Screen, Spec, TimelineOrder, View } from '../types'
-import type { Band, Nav, TicketCheck, TimelineRow } from './model'
+import type { Band, ClaimRow, Nav, TicketCheck, TimelineRow } from './model'
 import {
   SECTION_KEY_PREFIX,
   STANDING_FILTERS,
@@ -23,6 +23,7 @@ import {
   dayOf,
   documentLine,
   documentsOf,
+  expiredRows,
   filterDecisions,
   electionsOf,
   filterItems,
@@ -50,6 +51,8 @@ import {
   reviewsOf,
   rollupOf,
   rollupText,
+  searchHint,
+  searchTone,
   segments,
   sessionLinkLines,
   sessionsOf,
@@ -59,6 +62,7 @@ import {
   specMoved,
   specOf,
   specsOf,
+  staleRows,
   stampOf,
   stopOf,
   stripOf,
@@ -238,6 +242,33 @@ function sectionHeader(ui: Ui, title: string, count: string, key?: string): Rend
   )
 }
 
+/** The most claim rows Home draws under one heading; the rest are counted, never dropped silently. */
+const CLAIM_ROWS = 10
+
+/**
+ * Claims that need letting go, one row each: the item id, its age or expiry, then the release command as plain text.
+ * The pane runs nothing: the command is for a person to run in a shell. No rows, no section.
+ */
+function claimSection(ui: Ui, prefix: string, title: string, note: string, rows: readonly ClaimRow[]): RenderElement | false {
+  const { Box, Text } = ui
+  if (rows.length === 0) return false
+  return (
+    <Box key={`${prefix}-claims`} flexDirection="column">
+      {sectionHeader(ui, title, `${rows.length} · ${note}`, `${prefix}-claims-header`)}
+      {rows.slice(0, CLAIM_ROWS).map(one => (
+        <Box key={`${prefix}-${one.itemId}`} gap={2} flexWrap="wrap">
+          <Text bold>{one.itemId}</Text>
+          <Text dimColor>{one.when}</Text>
+          <Text>{one.command ?? 'no command shown: the id is not a plain word'}</Text>
+        </Box>
+      ))}
+      {rows.length > CLAIM_ROWS && (
+        <Text dimColor>{`and ${rows.length - CLAIM_ROWS} more: ledger doctor --json lists them all`}</Text>
+      )}
+    </Box>
+  )
+}
+
 function home(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
   const { Box, Button, Text } = ui
   const all = view.items
@@ -257,6 +288,10 @@ function home(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
   const claimed = all.filter(one => one.status === 'claimed')
   const verify = view.verify
   const search = view.doctor?.search ?? null
+  const tone = search === null ? 'ok' : searchTone(search)
+  const hint = search === null ? null : searchHint(search)
+  const lapsed = expiredRows(view.doctor, frame.now)
+  const stale = staleRows(view.doctor, frame.now)
 
   return (
     <Box flexDirection="column">
@@ -272,12 +307,18 @@ function home(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
         <Button key="verify" label={view.verifying ? 'Verifying…' : 'Verify'} hotkey="v" onPress={() => act.verify()} />
       </Box>
       {search !== null && (
-        <Box gap={1}>
-          <Text bold>Search index</Text>
-          <Text color={search.status === 'current' ? 'success' : search.status === 'missing' ? 'subtle' : 'warning'}>
-            ● {search.status}
-            {search.behind > 0 ? ` by ${thousands(search.behind)} ${search.behind === 1 ? 'event' : 'events'}` : ''}
-          </Text>
+        <Box flexDirection="column">
+          <Box gap={1}>
+            <Text bold>Search index</Text>
+            {/* Information (the next search brings the index up to date) is dim; only a real fault is a warning. */}
+            <Text {...(tone === 'ok' ? { color: 'success' } : tone === 'warn' ? { color: 'warning' } : { dimColor: true })}>
+              ● {search.status}
+              {search.behind > 0 ? ` by ${thousands(search.behind)} ${search.behind === 1 ? 'event' : 'events'}` : ''}
+            </Text>
+          </Box>
+          {hint !== null && (
+            <Text dimColor>{cut(hint, Math.max(20, frame.width - 2))}</Text>
+          )}
         </Box>
       )}
 
@@ -342,6 +383,9 @@ function home(ui: Ui, view: View, act: Act, frame: Frame): RenderElement {
           </Button>
         )}
       </Box>
+
+      {claimSection(ui, 'expired', 'Expired claims', 'run to release, in a shell; the pane writes nothing', lapsed)}
+      {claimSection(ui, 'stale', 'Stale claims', 'no lease, older than 7 days; run to release, in a shell', stale)}
 
       {sectionHeader(ui, 'Activity', 'items touched per day, last 30 days')}
       {(() => {

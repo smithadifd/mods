@@ -347,6 +347,69 @@ export function pageOf<T>(rows: readonly T[], page: number, size: number): T[] {
   return rows.slice(start, start + Math.max(1, size))
 }
 
+/** How loudly the search index asks to be noticed: the ledger's own `severity`, or the one its status implies. */
+export type SearchTone = 'ok' | 'info' | 'warn'
+
+/**
+ * The ledger's reading of the index: `current` is ok; `behind`, `stale` and `missing` are information, because the
+ * next search brings the index up to date on its own; any other status is a warning. A `severity` doctor carries wins.
+ */
+export function searchTone(search: Doctor['search']): SearchTone {
+  if (search.severity !== undefined) return search.severity
+  if (search.status === 'current') return 'ok'
+  return search.status === 'behind' || search.status === 'stale' || search.status === 'missing' ? 'info' : 'warn'
+}
+
+/**
+ * One line under an informational index state, naming doctor's reasons (`1 source(s) added: ...`, `... changed: ...`).
+ * Null for a current index and for a warning, which is not information.
+ */
+export function searchHint(search: Doctor['search']): string | null {
+  if (searchTone(search) !== 'info') return null
+  if (search.status === 'behind') return 'new events since the index was built; the next search indexes them'
+  if (search.status === 'missing') return 'no index built yet; the next search builds it'
+  const why = search.reasons !== undefined && search.reasons.length > 0 ? search.reasons.join('; ') : 'sources added or changed since the index was built'
+  return `${why}; the next search brings it up to date`
+}
+
+/** An item id that is safe to print inside a command: one word, no shell syntax. */
+const PLAIN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
+
+/**
+ * The ledger's own form for giving a claim up: `ledger state ITEM --status open` (docs/cli.md, `state ITEM --status
+ * STATUS`; `open` is an item status). Text only, for a person to run: the pane runs no write verb. Null for an id
+ * that is not a plain word, which is never put into a command line.
+ */
+export function releaseCommand(itemId: string): string | null {
+  return PLAIN_ID.test(itemId) ? `ledger state ${itemId} --status open` : null
+}
+
+/** One claim row on Home: the item id, its age or expiry in words, then the release command as plain text. */
+export type ClaimRow = { itemId: string; when: string; command: string | null }
+
+function agoWords(prefix: string, iso: string, now: number): string {
+  const age = iso === '' ? '?' : ageOf(iso, now)
+  if (age === '?') return prefix
+  return age === 'now' ? `${prefix} just now` : `${prefix} ${age} ago`
+}
+
+/** Doctor's expired claims, each with its release command. A row with no item id is left out: no command can name it. */
+export function expiredRows(doctor: Doctor | null, now: number): ClaimRow[] {
+  return (doctor?.expiredClaims ?? [])
+    .filter(one => one.itemId !== '')
+    .map(one => ({ itemId: one.itemId, when: agoWords('lease ended', one.expiresAt, now), command: releaseCommand(one.itemId) }))
+}
+
+/** Doctor's lease-less claims older than 7 days, when its JSON carries them; none otherwise. */
+export function staleRows(doctor: Doctor | null, now: number): ClaimRow[] {
+  return (doctor?.staleClaims ?? [])
+    .filter(one => one.itemId !== '')
+    .map(one => {
+      const age = one.claimedAt !== '' ? agoWords('claimed', one.claimedAt, now) : one.ageSeconds !== null ? `claimed ${spanOf(one.ageSeconds * 1000)} ago` : 'claimed'
+      return { itemId: one.itemId, when: `${age}, no lease`, command: releaseCommand(one.itemId) }
+    })
+}
+
 export type Needs = {
   decisions: Item[]
   blocked: Item[]
