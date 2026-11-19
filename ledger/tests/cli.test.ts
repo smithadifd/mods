@@ -153,6 +153,30 @@ describe('the parsers', () => {
     expect(parseDoctor(undefined).search).toEqual({ status: 'unknown', behind: 0 })
   })
 
+  test('doctor carries the search severity and reasons, and a later ledger\'s stale claims, only when it sends them', () => {
+    const base = { path: '/db/home.db', schema_version: 9, expired_claims: { status: 'ok', items: [] } }
+    // The current ledger: no severity, no reasons, no stale_claims; the result has none of those keys.
+    const plain = parseDoctor({ ...base, search: { status: 'stale', new_events: 0 } })
+    expect(Object.keys(plain.search).sort()).toEqual(['behind', 'status'])
+    expect(Object.keys(plain)).not.toContain('staleClaims')
+    // A severity the ledger names, and the reasons it gives.
+    const info = parseDoctor({ ...base, search: { status: 'stale', severity: 'info', reasons: ['1 source(s) added: /r/a.md', '', 7, '2 source(s) changed: /r/b.md'], new_events: 0 } })
+    expect(info.search).toEqual({ status: 'stale', behind: 0, severity: 'info', reasons: ['1 source(s) added: /r/a.md', '2 source(s) changed: /r/b.md'] })
+    // A severity that is not one of the three is dropped, never passed on.
+    expect(Object.keys(parseDoctor({ ...base, search: { status: 'stale', severity: 'loud' } }).search)).not.toContain('severity')
+    expect(Object.keys(parseDoctor({ ...base, search: { status: 'stale', severity: 7 } }).search)).not.toContain('severity')
+    // The next ledger's stale_claims, as doctor's `{status, items}` list or a bare list.
+    const row = { item_id: 'S1', holder: 'seat-3', claimed_at: '2026-11-01T00:00:00Z', age_seconds: 1555200 }
+    const wrapped = parseDoctor({ ...base, search: { status: 'current' }, stale_claims: { status: 'ok', items: [row, 'junk', null] } })
+    expect(wrapped.staleClaims).toEqual([{ itemId: 'S1', holder: 'seat-3', claimedAt: '2026-11-01T00:00:00Z', ageSeconds: 1555200 }])
+    expect(parseDoctor({ ...base, search: { status: 'current' }, stale_claims: [row] }).staleClaims).toEqual(wrapped.staleClaims)
+    expect(parseDoctor({ ...base, search: { status: 'current' }, stale_claims: { status: 'ok', items: [] } }).staleClaims).toEqual([])
+    // A key that holds no list is no key: nothing to draw and nothing thrown.
+    for (const bad of ['nope', 7, null, true, {}, { items: 'x' }, { items: { a: 1 } }]) {
+      expect(Object.keys(parseDoctor({ ...base, search: { status: 'current' }, stale_claims: bad }))).not.toContain('staleClaims')
+    }
+  })
+
   test('decisions keep standing, who, the words and the tags', () => {
     const [one] = parseDecisions({
       decisions: [

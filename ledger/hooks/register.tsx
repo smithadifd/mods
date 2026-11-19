@@ -327,6 +327,7 @@ export const register: Register = (on, options) => {
       rows: e.props.scroll.bodyRows,
       offset: e.props.scroll.offset,
       now: Date.now(),
+      cli,
     })
   })
 }

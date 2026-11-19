@@ -148,15 +148,37 @@ export function parseDoctor(data: unknown): Doctor {
   const root = isObject(data) ? data : {}
   const search = isObject(root.search) ? root.search : {}
   const expired = isObject(root.expired_claims) ? list(root.expired_claims.items) : []
+  // `stale_claims` (lease-less claims older than 7 days) is a later ledger's key. Absent, or neither a list nor an
+  // object holding one, it stays out of the result: the pane draws nothing for it and it is not an error.
+  const staleRoot = root.stale_claims
+  const stale = Array.isArray(staleRoot) ? staleRoot : isObject(staleRoot) && Array.isArray(staleRoot.items) ? staleRoot.items : null
+  const severity = str(search.severity)
+  const reasons = list(search.reasons).filter((one): one is string => typeof one === 'string' && one !== '')
   return {
     path: str(root.path),
     schemaVersion: num(root.schema_version),
-    search: { status: str(search.status) || 'unknown', behind: num(search.new_events) },
+    search: {
+      status: str(search.status) || 'unknown',
+      behind: num(search.new_events),
+      // Only when doctor carries them: an older ledger's search state keeps exactly the fields it had.
+      ...(severity === 'ok' || severity === 'info' || severity === 'warn' ? { severity } : {}),
+      ...(reasons.length > 0 ? { reasons } : {}),
+    },
     expiredClaims: expired.filter(isObject).map(row => ({
       itemId: str(row.item_id) || str(row.item) || str(row.id),
       holder: str(row.holder) || str(row.claim) || str(row.actor),
       expiresAt: str(row.expires_at) || str(row.expired_at),
     })),
+    ...(stale === null
+      ? {}
+      : {
+          staleClaims: stale.filter(isObject).map(row => ({
+            itemId: str(row.item_id) || str(row.item) || str(row.id),
+            holder: str(row.holder) || str(row.claim) || str(row.actor),
+            claimedAt: str(row.claimed_at),
+            ageSeconds: numOrNull(row.age_seconds),
+          })),
+        }),
   }
 }
 

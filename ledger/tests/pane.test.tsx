@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { MockClock, TestBody } from 'claude-code/testing'
 
 import type { View } from '../types'
-import { READ_VERBS, parseCard, parseEvents } from '../hooks/cli'
+import { READ_VERBS, cliFrom, parseCard, parseEvents } from '../hooks/cli'
 import { draw } from '../hooks/screens'
 import { LEDGER_0_1_18_TICKET_EXPORT_STDOUT } from './ledger-0.1.18-ticket-export'
 import { LEDGER_0_1_20_DOCUMENTS_EXPORT_ITEM_STDOUT } from './ledger-0.1.20-documents'
@@ -923,7 +923,7 @@ describe('the item screen: strip, Now and the timeline', () => {
       verify: null,
       verifying: false,
     }
-    const found = nodes(draw(FAKE, view, act, { width: 100, rows: 30, now: Date.now(), offset: 0 }))
+    const found = nodes(draw(FAKE, view, act, { width: 100, rows: 30, now: Date.now(), offset: 0, cli: cliFrom({}) }))
     for (const [name, hotkey] of [['now', 'n'], ['decisions', 'e'], ['links', 'l'], ['timeline', 't'], ['spec', 'p'], ['documents', 'm']] as const) {
       const button = found.find(one => one.props.key === `strip-${name}`)
       expect(button?.props.hotkey).toBe(hotkey)
@@ -1971,6 +1971,227 @@ describe('the item screen: Documents', () => {
       expect(argv[1]).toBe('--json')
       expect((READ_VERBS as readonly string[]).includes(argv[2] ?? '')).toBe(true)
       expect(argv).not.toContain('doc')
+    }
+    await ui.unmount()
+  })
+})
+
+describe('Home: the search index as information, and the claims that need letting go', () => {
+  const DOCTOR = { path: '/db/home.db', schema_version: 9, search: { status: 'current', new_events: 0 }, expired_claims: { status: 'ok', items: [] } }
+
+  async function homeWith($: Parameters<TestBody>[0], on: On, doctor: Record<string, unknown>, seen: string[][] = []) {
+    engine(on, seen, argv => (argv.includes('doctor') ? ok(doctor) : answer(argv)))
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command(''))
+    const ui = await $.ui.mount(paneAt(100))
+    await ui.press({ key: 'refresh' })
+    return ui
+  }
+
+  test('a stale index is dim information with a hint naming doctor\'s reasons, not a warning colour', async ($, on) => {
+    const reasons = ['1 source(s) added: /r/a.md', '2 source(s) changed: /r/b.md']
+    const ui = await homeWith($, on, { ...DOCTOR, search: { status: 'stale', severity: 'info', reasons, new_events: 0 } })
+    const status = await ui.find({ type: 'Text', text: /^● stale/ })
+    expect(status?.text).toBe('● stale')
+    expect(status?.props.dimColor).toBe(true)
+    expect(status?.props.color).toBe(undefined)
+    const hint = await ui.find({ type: 'Text', text: /the next search brings it up to date/ })
+    expect(hint?.props.dimColor).toBe(true)
+    expect(hint?.text).toContain('1 source(s) added: /r/a.md')
+    expect(hint?.text).toContain('2 source(s) changed: /r/b.md')
+    await ui.unmount()
+  })
+
+  test('a stale index from a ledger that names no reasons still says sources were added or changed', async ($, on) => {
+    const ui = await homeWith($, on, { ...DOCTOR, search: { status: 'stale', new_events: 0 } })
+    const status = await ui.find({ type: 'Text', text: /^● stale/ })
+    expect(status?.props.dimColor).toBe(true)
+    expect(status?.props.color).toBe(undefined)
+    expect((await ui.find({ type: 'Text', text: /sources added or changed/ }))?.props.dimColor).toBe(true)
+    await ui.unmount()
+  })
+
+  test('a behind index keeps its count in the status and is dim with a hint', async ($, on) => {
+    const ui = await homeWith($, on, { ...DOCTOR, search: { status: 'behind', severity: 'info', reasons: [], new_events: 1234 } })
+    const status = await ui.find({ type: 'Text', text: /^● behind/ })
+    expect(status?.text).toBe('● behind by 1,234 events')
+    expect(status?.props.dimColor).toBe(true)
+    expect(status?.props.color).toBe(undefined)
+    expect((await ui.find({ type: 'Text', text: /new events since the index was built/ }))?.props.dimColor).toBe(true)
+    await ui.unmount()
+  })
+
+  test('a current index stays green with no hint', async ($, on) => {
+    const ui = await homeWith($, on, DOCTOR)
+    const status = await ui.find({ type: 'Text', text: /^● current/ })
+    expect(status?.props.color).toBe('success')
+    expect(status?.props.dimColor).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: /the next search/ })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('an index that cannot be built where it is stays a warning, with no information hint', async ($, on) => {
+    const ui = await homeWith($, on, { ...DOCTOR, search: { status: 'unknown', severity: 'warn', reasons: ['refusing to use search.db inside a git work tree'], new_events: 0 } })
+    const status = await ui.find({ type: 'Text', text: /^● unknown/ })
+    expect(status?.props.color).toBe('warning')
+    expect(status?.props.dimColor).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: /the next search/ })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('expired claims are listed on Home, each with its release command as plain text', async ($, on) => {
+    const items = [
+      { item_id: 'A1', holder: 'seat-9', expires_at: '2026-11-05T00:00:00Z' },
+      { item_id: 'rm-SL33', holder: 'seat-8', expires_at: '2026-11-06T00:00:00Z' },
+    ]
+    const ui = await homeWith($, on, { ...DOCTOR, expired_claims: { status: 'expired', items } })
+    expect((await ui.find({ key: 'expired-claims-header' }))?.text).toContain('Expired claims')
+    expect(await ui.find({ type: 'Text', text: /^ledger --db \/db\/home\.db state A1 --status open$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ledger --db \/db\/home\.db state rm-SL33 --status open$/ })).toBeDefined()
+    // A row is the item id, how long ago the lease ended, then the command.
+    expect((await ui.find({ key: 'expired-A1' }))?.text).toMatch(/A1[\s\S]*lease ended [\s\S]*ledger --db \/db\/home\.db state A1 --status open/)
+    expect((await ui.find({ type: 'Text', text: /^lease ended \d+[a-z]+ ago$/ }))?.props.dimColor).toBe(true)
+    // The tile that opens Needs you is still there, and no stale section is drawn without the key.
+    expect(await ui.find({ key: 'tile-expired' })).toBeDefined()
+    expect(await ui.find({ key: 'stale-claims' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  test('an id that is not a plain word gets no command line', async ($, on) => {
+    const items = [{ item_id: 'a b; echo hi', holder: 'seat-9', expires_at: '2026-11-05T00:00:00Z' }]
+    const ui = await homeWith($, on, { ...DOCTOR, expired_claims: { status: 'expired', items } })
+    expect(await ui.find({ type: 'Text', text: /no command shown/ })).toBeDefined()
+    expect(await ui.findAll({ type: 'Text', text: /ledger state/ })).toEqual([])
+    await ui.unmount()
+  })
+
+  test('with no database path known there is no command line, not one that would fall back to LEDGER_DB', async ($, on) => {
+    const items = [{ item_id: 'A1', holder: 'seat-9', expires_at: '2026-11-05T00:00:00Z' }]
+    const { path: _path, ...noPath } = DOCTOR
+    const ui = await homeWith($, on, { ...noPath, expired_claims: { status: 'expired', items } })
+    expect((await ui.find({ key: 'expired-A1' }))?.text).toContain('A1')
+    expect(await ui.find({ type: 'Text', text: /no command shown: the database path is not known/ })).toBeDefined()
+    expect(await ui.findAll({ type: 'Text', text: /state A1/ })).toEqual([])
+    await ui.unmount()
+  })
+
+  test('the printed release command is the pane\'s own invocation: its configured words, folder and database', () => {
+    const doctor = { path: '/data/my notes/home.db', schemaVersion: 9, search: { status: 'current', behind: 0 }, expiredClaims: [{ itemId: 'A1', holder: 'h', expiresAt: '2026-11-05T00:00:00Z' }] }
+    const view: View = {
+      screen: 'home',
+      isOpen: true,
+      loading: false,
+      error: null,
+      loadedAt: null,
+      doctor,
+      items: [],
+      ready: [],
+      decisions: [],
+      typeFilter: 'all',
+      statusFilter: 'all',
+      standingFilter: 'all',
+      page: 0,
+      itemId: null,
+      item: null,
+      itemLoading: false,
+      itemError: null,
+      itemReadAt: null,
+      siblings: [],
+      history: [],
+      timelineOrder: 'newest',
+      timelineKind: 'all',
+      openEvents: [],
+      openSpecs: [],
+      expanded: null,
+      query: '',
+      hits: [],
+      searched: null,
+      verify: null,
+      verifying: false,
+    }
+    const act = new Proxy({}, { get: () => () => undefined }) as Act
+    const cli = cliFrom({ command: 'python3 -m ledger', folder: '/my lib', db: '/opt/other.db' })
+    const found = nodes(draw(FAKE, view, act, { width: 100, rows: 30, now: Date.parse('2026-11-18T12:00:00Z'), offset: 0, cli }))
+    const words = (one: Node): string => ([] as unknown[]).concat(one.props.children).join('')
+    const printed = found.filter(one => one.type === 'Text' && /state A1/.test(words(one))).map(words)
+    expect(printed).toEqual(["cd -- '/my lib' && python3 -m ledger --db '/data/my notes/home.db' state A1 --status open"])
+  })
+
+  test('at 80 columns the search hint keeps its explanation when a reason holds a long path', async ($, on) => {
+    const reasons = ['2 source(s) changed: /Users/someone/work/a/very/long/path/to/the/notes/folder/that/goes/on/and/on/file.md']
+    engine(on, [], argv => (argv.includes('doctor') ? ok({ ...DOCTOR, search: { status: 'stale', severity: 'info', reasons, new_events: 0 } }) : answer(argv)))
+    await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+    await $.command.run(command(''))
+    const ui = await $.ui.mount(paneAt(80))
+    await ui.press({ key: 'refresh' })
+    const hint = await ui.find({ type: 'Text', text: /the next search brings it up to date/ })
+    expect(hint?.text.endsWith('; the next search brings it up to date')).toBe(true)
+    expect(hint?.text).toContain('2 source(s) changed: /Users/')
+    expect(Array.from(hint?.text ?? '').length).toBeLessThanOrEqual(78)
+    await ui.unmount()
+  })
+
+  test('stale claims are listed when doctor carries the key, in the same grammar', async ($, on) => {
+    const items = [{ item_id: 'S1', holder: 'seat-3', claimed_at: '2026-11-01T00:00:00Z', age_seconds: 1_555_200 }]
+    const ui = await homeWith($, on, { ...DOCTOR, stale_claims: { status: 'ok', items } })
+    expect((await ui.find({ key: 'stale-claims-header' }))?.text).toContain('Stale claims')
+    expect(await ui.find({ type: 'Text', text: /^ledger --db \/db\/home\.db state S1 --status open$/ })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /^claimed \d+[a-z]+ ago, no lease$/ }))?.props.dimColor).toBe(true)
+    expect((await ui.find({ key: 'stale-S1' }))?.text).toMatch(/S1[\s\S]*claimed [\s\S]*ledger --db \/db\/home\.db state S1 --status open/)
+    // No expired claims here, so no expired section.
+    expect(await ui.find({ key: 'expired-claims' })).toBe(undefined)
+    await ui.unmount()
+  })
+
+  for (const [name, stale] of [
+    ['no key', undefined],
+    ['a string', 'nope'],
+    ['an object with no list', { items: 'x' }],
+    ['an empty list', { status: 'ok', items: [] }],
+    ['a list of non-rows', [1, null, 'a']],
+  ] as const) {
+    test(`stale claims as ${name}: Home draws the rest and no claims section`, async ($, on) => {
+      const ui = await homeWith($, on, { ...DOCTOR, ...(stale === undefined ? {} : { stale_claims: stale }) })
+      expect((await ui.find({ key: 'tile-ready' }))?.text).toBe('1 ready')
+      expect(await ui.find({ key: 'stale-claims' })).toBe(undefined)
+      expect(await ui.find({ key: 'expired-claims' })).toBe(undefined)
+      expect(await ui.findAll({ type: 'Text', text: /Stale claims/ })).toEqual([])
+      await ui.unmount()
+    })
+  }
+
+  test('a long list is cut to ten rows and says how many more there are', async ($, on) => {
+    const items = Array.from({ length: 13 }, (_, i) => ({ item_id: `S${i + 1}`, holder: 'seat-3', claimed_at: '2026-11-01T00:00:00Z' }))
+    const ui = await homeWith($, on, { ...DOCTOR, stale_claims: { status: 'ok', items } })
+    expect((await ui.find({ key: 'stale-claims-header' }))?.text).toContain('13')
+    expect(await ui.find({ key: 'stale-S10' })).toBeDefined()
+    expect(await ui.find({ key: 'stale-S11' })).toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: /^and 3 more/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('the claims lists add no button and run no verb: only the read verbs, never a state write or an index', async ($, on) => {
+    const seen: string[][] = []
+    const doctor = {
+      ...DOCTOR,
+      search: { status: 'stale', severity: 'info', reasons: ['1 source(s) added: /r/a.md'], new_events: 0 },
+      expired_claims: { status: 'expired', items: [{ item_id: 'A1', holder: 'seat-9', expires_at: '2026-11-05T00:00:00Z' }] },
+      stale_claims: { status: 'ok', items: [{ item_id: 'S1', holder: 'seat-3', claimed_at: '2026-11-01T00:00:00Z' }] },
+    }
+    const ui = await homeWith($, on, doctor, seen)
+    await ui.press({ key: 'refresh' })
+    await ui.press({ key: 'tab-home' })
+    expect(await ui.find({ key: 'expired-A1' })).toBeDefined()
+    expect(await ui.find({ key: 'stale-S1' })).toBeDefined()
+    // The command is text, never a button, and no row of a claims list is pressable.
+    expect(await ui.findAll({ type: 'Button', text: /ledger state/ })).toEqual([])
+    expect(await ui.findAll({ type: 'Button', text: /A1|S1/ })).toEqual([])
+    expect(seen.length).toBeGreaterThan(4)
+    for (const argv of seen) {
+      expect(argv[0]).toBe('ledger')
+      expect(argv[1]).toBe('--json')
+      expect((READ_VERBS as readonly string[]).includes(argv[2] ?? '')).toBe(true)
+      for (const write of ['new', 'note', 'state', 'claim', 'elect', 'append', 'restore', 'index']) expect(argv).not.toContain(write)
     }
     await ui.unmount()
   })

@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { Event, Item } from '../types'
+import type { Doctor, Event, Item } from '../types'
+import { cliFrom } from '../hooks/cli'
+import { expiredRows, releaseCommand, searchHint, searchTone, shellWord, staleRows } from '../hooks/model'
 import {
   ageOf,
   answeredAsksOf,
@@ -922,5 +924,199 @@ describe('claimed items by seat (model)', () => {
     const grouped = groupBySeat(items)
     const placed = [...grouped.seats.flatMap(group => group.items), ...grouped.unlabelled].map(one => one.id)
     expect(placed.sort()).toEqual(['A1', 'B1', 'N1'])
+  })
+})
+
+describe('Home: the search index as information, and the claims that need letting go', () => {
+  const NOW = Date.parse('2026-11-18T12:00:00Z')
+  const CLI = cliFrom({})
+  const doctor = (extra: Partial<Doctor> = {}, search: Doctor['search'] = { status: 'current', behind: 0 }): Doctor => ({ path: '/db', schemaVersion: 9, search, expiredClaims: [], ...extra })
+
+  test('the index tone follows the ledger\'s severity, or the one its status implies', () => {
+    expect(searchTone({ status: 'current', behind: 0 })).toBe('ok')
+    for (const status of ['behind', 'stale', 'missing']) expect(searchTone({ status, behind: 0 })).toBe('info')
+    expect(searchTone({ status: 'unknown', behind: 0 })).toBe('warn')
+    expect(searchTone({ status: 'weird', behind: 0 })).toBe('warn')
+    // A severity doctor carries wins over the status.
+    expect(searchTone({ status: 'stale', behind: 0, severity: 'warn' })).toBe('warn')
+    expect(searchTone({ status: 'unknown', behind: 0, severity: 'info' })).toBe('info')
+  })
+
+  test('at 80 columns a long reason is shortened and the explanation of what the next search does stays', () => {
+    const explanation = '; the next search brings it up to date'
+    const long = ['3 source(s) changed: /Users/someone/work/a/very/long/path/to/the/notes/folder/that/goes/on/and/on/file.md']
+    const stale = { status: 'stale', behind: 0, severity: 'info' as const, reasons: long }
+    const line = searchHint(stale, 78) as string
+    expect(line.endsWith(explanation)).toBe(true)
+    expect(Array.from(line).length).toBe(78)
+    expect(line.startsWith('3 source(s) changed: /Users/')).toBe(true)
+    expect(line).toContain('…')
+    // Several reasons: still the explanation, still within the room.
+    const many = searchHint({ ...stale, reasons: ['1 source(s) added: /r/a.md', ...long] }, 78) as string
+    expect(many.endsWith(explanation)).toBe(true)
+    expect(Array.from(many).length).toBeLessThanOrEqual(78)
+    // A line that fits is not touched, and no room means no cut.
+    expect(searchHint({ ...stale, reasons: ['1 source(s) added: /r/a.md'] }, 78)).toBe('1 source(s) added: /r/a.md; the next search brings it up to date')
+    expect(searchHint(stale)).toBe(`${long[0]}${explanation}`)
+    // Too little room for both: the line is cut to the room, never wider.
+    expect(Array.from(searchHint(stale, 30) as string).length).toBe(30)
+    // The other information states are cut to the room as well.
+    expect(Array.from(searchHint({ status: 'behind', behind: 3 }, 20) as string).length).toBe(20)
+  })
+
+  test('the hint names doctor\'s reasons for a stale index, and says what each other information state waits on', () => {
+    expect(searchHint({ status: 'stale', behind: 0, severity: 'info', reasons: ['1 source(s) added: /r/a.md', '2 source(s) changed: /r/b.md'] })).toBe(
+      '1 source(s) added: /r/a.md; 2 source(s) changed: /r/b.md; the next search brings it up to date',
+    )
+    // An older ledger names no reasons: the hint says what stale means.
+    expect(searchHint({ status: 'stale', behind: 0 })).toBe('sources added or changed since the index was built; the next search brings it up to date')
+    expect(searchHint({ status: 'behind', behind: 3 })).toBe('new events since the index was built; the next search indexes them')
+    expect(searchHint({ status: 'missing', behind: 0 })).toBe('no index built yet; the next search builds it')
+    // A current index and a real fault get no hint: the first needs none, the second is not information.
+    expect(searchHint({ status: 'current', behind: 0 })).toBe(null)
+    expect(searchHint({ status: 'unknown', behind: 0, reasons: ['config is not JSON'] })).toBe(null)
+  })
+
+  test('the release command is the ledger\'s own state verb, naming the database the pane read, for a plain id only', () => {
+    expect(releaseCommand('A1', CLI, '/db/home.db')).toBe('ledger --db /db/home.db state A1 --status open')
+    expect(releaseCommand('it-1a2b3c4d5e6f', CLI, '/db/home.db')).toBe('ledger --db /db/home.db state it-1a2b3c4d5e6f --status open')
+    expect(releaseCommand('rm-SL33', CLI, '/db/home.db')).toBe('ledger --db /db/home.db state rm-SL33 --status open')
+    for (const bad of ['', ' ', 'a b', 'a;b', 'a|b', '$(x)', '`x`', 'a&b', '-x', 'a\nb', 'a"b', "a'b", 'a>b', 'a\\b']) expect(releaseCommand(bad, CLI, '/db/home.db')).toBe(null)
+  })
+
+  test('the release command is the pane\'s own invocation: its command words, the resolved database, and its folder', () => {
+    const python = cliFrom({ command: 'python3 -m ledger', folder: '/lib', db: '/opt/other.db' })
+    // Doctor's resolved path is the database the pane read, so it wins over the Database option.
+    expect(releaseCommand('A1', python, '/db/home.db')).toBe('cd -- /lib && python3 -m ledger --db /db/home.db state A1 --status open')
+    // With no path from doctor, the Database option names it.
+    expect(releaseCommand('A1', python, '')).toBe('cd -- /lib && python3 -m ledger --db /opt/other.db state A1 --status open')
+    // No folder, no cd; a blank command is `ledger` on PATH, as the pane runs it.
+    expect(releaseCommand('A1', cliFrom({ command: '  ', db: '/opt/other.db' }), '')).toBe('ledger --db /opt/other.db state A1 --status open')
+    expect(releaseCommand('A1', cliFrom({ command: '/usr/local/bin/ledger' }), '/db/home.db')).toBe('/usr/local/bin/ledger --db /db/home.db state A1 --status open')
+    // The pane's own read of the same database names the same --db: the release goes where the pane looked.
+    expect(releaseCommand('A1', python, '/db/home.db')).toContain(' --db /db/home.db ')
+  })
+
+  test('no known database means no command: it would fall back to whatever LEDGER_DB names in the shell', () => {
+    expect(releaseCommand('A1', CLI, '')).toBe(null)
+    expect(releaseCommand('A1', CLI, '   ')).toBe(null)
+    expect(releaseCommand('A1', cliFrom({ db: '  ' }), '')).toBe(null)
+    const lapsed = [{ itemId: 'A1', holder: 'seat-9', expiresAt: '2026-11-15T12:00:00Z' }]
+    expect(expiredRows(doctor({ path: '', expiredClaims: lapsed }), NOW, CLI)).toEqual([{ itemId: 'A1', when: 'lease ended 3d ago', command: null }])
+    expect(staleRows(doctor({ path: '', staleClaims: [{ itemId: 'S1', holder: 'h', claimedAt: '', ageSeconds: null }] }), NOW, CLI)).toEqual([
+      { itemId: 'S1', when: 'claimed, no lease', command: null },
+    ])
+    // The Database option stands in when doctor sends no path.
+    expect(expiredRows(doctor({ path: '', expiredClaims: lapsed }), NOW, cliFrom({ db: '/opt/other.db' }))[0]?.command).toBe('ledger --db /opt/other.db state A1 --status open')
+  })
+
+  /**
+   * The words a POSIX shell would hand to the commands of a printed line: bare words of safe characters and
+   * single-quoted spans only (and `\'` for a quote), with `&&` between commands. Anything else unquoted (`$`, a
+   * backtick, `;`, `|`, `&`, `*`, `~`, `=`, a double quote) throws, because a shell would act on it.
+   * Returns the words of each command, `cd` first when there is one.
+   */
+  function shellWords(line: string): string[][] {
+    const commands: string[][] = [[]]
+    let word: string | null = null
+    let i = 0
+    const flush = (): void => {
+      if (word !== null) commands[commands.length - 1]!.push(word)
+      word = null
+    }
+    while (i < line.length) {
+      const c = line[i]!
+      if (c === "'") {
+        const end = line.indexOf("'", i + 1)
+        if (end < 0) throw new Error(`unterminated quote in ${line}`)
+        word = (word ?? '') + line.slice(i + 1, end)
+        i = end + 1
+      } else if (c === '\\' && i + 1 < line.length) {
+        // A backslash outside quotes makes the next character literal: how a quote is written inside a quoted word.
+        word = (word ?? '') + line[i + 1]!
+        i += 2
+      } else if (c === ' ') {
+        flush()
+        i += 1
+      } else if (line.startsWith('&&', i) && word === null) {
+        commands.push([])
+        i += 2
+      } else if (/[A-Za-z0-9_@%+:,./-]/.test(c)) {
+        word = (word ?? '') + c
+        i += 1
+      } else throw new Error(`unquoted ${JSON.stringify(c)} at ${i} in ${line}`)
+    }
+    flush()
+    return commands
+  }
+
+  test('every word is quoted so that a POSIX shell reads back exactly the words: a space and a quote in the path round-trip', () => {
+    const awkward = ["/data/my notes/home.db", "/data/it's/home.db", `/data/a "b" c/home.db`, '/data/$HOME/`id`/;x|y&z/home.db', '/data/*/?.db', '~/home.db', '/data/\\back/home.db', "''", 'a=b']
+    for (const db of awkward) {
+      const printed = releaseCommand('A1', cliFrom({ command: 'ledger' }), db)
+      expect(printed).not.toBe(null)
+      expect(shellWords(printed as string)).toEqual([['ledger', '--db', db, 'state', 'A1', '--status', 'open']])
+    }
+    // The command words and the folder are quoted the same way.
+    const printed = releaseCommand('A1', cliFrom({ command: "python3 -m ledger a=b $x", folder: "/my lib/it's" }), "/d b/it's.db")
+    expect(shellWords(printed as string)).toEqual([['cd', '--', "/my lib/it's"], ['python3', '-m', 'ledger', 'a=b', '$x', '--db', "/d b/it's.db", 'state', 'A1', '--status', 'open']])
+    // The splitter is strict: an unquoted `$`, `;` or `=` is an error, and an unquoted space splits the word, so a missed quote cannot pass.
+    for (const loose of ['ledger --db $HOME/x', 'ledger --db /a;b', 'ledger a=b']) expect(() => shellWords(loose)).toThrow()
+    // A plain word stays bare; anything else is in single quotes, a quote as '\''.
+    expect(shellWord('/db/home.db')).toBe('/db/home.db')
+    expect(shellWord('a b')).toBe("'a b'")
+    expect(shellWord("it's")).toBe("'it'\\''s'")
+    expect(shellWord('')).toBe("''")
+    expect(shellWord('a=b')).toBe("'a=b'")
+  })
+
+  test('an expired claim is its id, how long ago the lease ended, and the release command', () => {
+    const rows = expiredRows(
+      doctor({
+        expiredClaims: [
+          { itemId: 'A1', holder: 'seat-9', expiresAt: '2026-11-15T12:00:00Z' },
+          { itemId: 'B2', holder: 'seat-1', expiresAt: '' },
+          { itemId: 'C3', holder: 'seat-1', expiresAt: 'not a time' },
+          { itemId: 'D4', holder: 'seat-1', expiresAt: '2026-11-18T11:59:50Z' },
+          { itemId: '', holder: 'seat-1', expiresAt: '2026-11-15T12:00:00Z' },
+          { itemId: 'a b', holder: 'seat-1', expiresAt: '2026-11-15T12:00:00Z' },
+        ],
+      }),
+      NOW,
+      CLI,
+    )
+    expect(rows).toEqual([
+      { itemId: 'A1', when: 'lease ended 3d ago', command: 'ledger --db /db state A1 --status open' },
+      { itemId: 'B2', when: 'lease ended', command: 'ledger --db /db state B2 --status open' },
+      { itemId: 'C3', when: 'lease ended', command: 'ledger --db /db state C3 --status open' },
+      { itemId: 'D4', when: 'lease ended just now', command: 'ledger --db /db state D4 --status open' },
+      { itemId: 'a b', when: 'lease ended 3d ago', command: null },
+    ])
+    expect(expiredRows(null, NOW, CLI)).toEqual([])
+    expect(expiredRows(doctor(), NOW, CLI)).toEqual([])
+  })
+
+  test('a stale claim is its id, how long ago it was claimed with no lease, and the release command; an absent list is no rows', () => {
+    const rows = staleRows(
+      doctor({
+        staleClaims: [
+          { itemId: 'S1', holder: 'seat-3', claimedAt: '2026-11-08T12:00:00Z', ageSeconds: null },
+          { itemId: 'S2', holder: 'seat-3', claimedAt: '', ageSeconds: 9 * 86_400 },
+          { itemId: 'S3', holder: 'seat-3', claimedAt: '', ageSeconds: null },
+          { itemId: '', holder: 'seat-3', claimedAt: '', ageSeconds: null },
+        ],
+      }),
+      NOW,
+      CLI,
+    )
+    expect(rows).toEqual([
+      { itemId: 'S1', when: 'claimed 10d ago, no lease', command: 'ledger --db /db state S1 --status open' },
+      { itemId: 'S2', when: 'claimed 9d ago, no lease', command: 'ledger --db /db state S2 --status open' },
+      { itemId: 'S3', when: 'claimed, no lease', command: 'ledger --db /db state S3 --status open' },
+    ])
+    // The current ledger sends no stale_claims: no key, no rows, no throw.
+    expect(staleRows(doctor(), NOW, CLI)).toEqual([])
+    expect(staleRows(null, NOW, CLI)).toEqual([])
+    expect(staleRows(doctor({ staleClaims: [] }), NOW, CLI)).toEqual([])
   })
 })

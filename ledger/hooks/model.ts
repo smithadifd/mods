@@ -1,3 +1,4 @@
+import type { Cli } from './cli'
 import type { AskOption, Decision, DecisionRecord, Doctor, Election, Event, Item, ItemHeader, LinkRow, Note, Review, Screen, Spec, Status, Stop, Tried } from '../types'
 
 export const STATUSES: readonly Status[] = ['open', 'claimed', 'blocked', 'closed']
@@ -345,6 +346,100 @@ export function pageCount(total: number, size: number): number {
 export function pageOf<T>(rows: readonly T[], page: number, size: number): T[] {
   const start = Math.max(0, page) * Math.max(1, size)
   return rows.slice(start, start + Math.max(1, size))
+}
+
+/** How loudly the search index asks to be noticed: the ledger's own `severity`, or the one its status implies. */
+export type SearchTone = 'ok' | 'info' | 'warn'
+
+/**
+ * The ledger's reading of the index: `current` is ok; `behind`, `stale` and `missing` are information, because the
+ * next search brings the index up to date on its own; any other status is a warning. A `severity` doctor carries wins.
+ */
+export function searchTone(search: Doctor['search']): SearchTone {
+  if (search.severity !== undefined) return search.severity
+  if (search.status === 'current') return 'ok'
+  return search.status === 'behind' || search.status === 'stale' || search.status === 'missing' ? 'info' : 'warn'
+}
+
+/** What the stale-index hint says after doctor's reasons; kept whole when the line is cut to fit. */
+const HINT_EXPLANATION = '; the next search brings it up to date'
+
+/**
+ * One line under an informational index state, naming doctor's reasons (`1 source(s) added: ...`, `... changed: ...`).
+ * Null for a current index and for a warning, which is not information. Given `room` (cells), the line is cut to it,
+ * and a long reason is what gets shortened: the explanation of what the next search does stays whole unless the room
+ * is too small for both.
+ */
+export function searchHint(search: Doctor['search'], room?: number): string | null {
+  if (searchTone(search) !== 'info') return null
+  const fitted = (line: string): string => (room === undefined ? line : cut(line, room))
+  if (search.status === 'behind') return fitted('new events since the index was built; the next search indexes them')
+  if (search.status === 'missing') return fitted('no index built yet; the next search builds it')
+  const why = search.reasons !== undefined && search.reasons.length > 0 ? search.reasons.join('; ') : 'sources added or changed since the index was built'
+  const whole = `${why}${HINT_EXPLANATION}`
+  if (room === undefined || Array.from(whole.replace(/\s+/g, ' ')).length <= room) return fitted(whole)
+  const whyRoom = room - HINT_EXPLANATION.length
+  return whyRoom >= MIN_REASON_ROOM ? `${cut(why, whyRoom)}${HINT_EXPLANATION}` : cut(whole, room)
+}
+
+/** The fewest cells worth keeping for doctor's reasons when the explanation is kept whole. */
+const MIN_REASON_ROOM = 10
+
+/** An item id that is safe to print inside a command: one word, no shell syntax. */
+const PLAIN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/
+
+/** True for an item id that is safe to print inside a command. */
+export function isPlainId(itemId: string): boolean {
+  return PLAIN_ID.test(itemId)
+}
+
+/** Characters a POSIX shell reads as themselves anywhere in a word: no `=` (an assignment first), `~`, `*`, `!` or quote. */
+const BARE_WORD = /^[A-Za-z0-9_@%+:,./-]+$/
+
+/** One word for a POSIX shell: bare when nothing in it is special, otherwise in single quotes (`'` as `'\\''`). */
+export function shellWord(word: string): string {
+  return BARE_WORD.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * The ledger's own form for giving a claim up (docs/cli.md, `state ITEM --status STATUS`; `open` is an item status),
+ * written as the pane itself would run the ledger: the configured command words, `--db` naming the database the pane
+ * read (doctor's resolved path, else the Database option), and, when the pane runs the command from a configured
+ * folder, a `cd` there first. Text only, for a person to run: the pane runs no write verb. Null for an id that is not
+ * a plain word and when no database path is known at all, since the command would then fall back to whatever
+ * `LEDGER_DB` names in the person's shell, a different database from the one on screen.
+ */
+export function releaseCommand(itemId: string, cli: Cli, doctorPath: string): string | null {
+  const db = doctorPath.trim() !== '' ? doctorPath : cli.db
+  if (!PLAIN_ID.test(itemId) || db.trim() === '' || cli.argv.length === 0) return null
+  const run = [...cli.argv.map(shellWord), '--db', shellWord(db), 'state', itemId, '--status', 'open'].join(' ')
+  return cli.cwd === undefined ? run : `cd -- ${shellWord(cli.cwd)} && ${run}`
+}
+
+/** One claim row on Home: the item id, its age or expiry in words, then the release command as plain text. */
+export type ClaimRow = { itemId: string; when: string; command: string | null }
+
+function agoWords(prefix: string, iso: string, now: number): string {
+  const age = iso === '' ? '?' : ageOf(iso, now)
+  if (age === '?') return prefix
+  return age === 'now' ? `${prefix} just now` : `${prefix} ${age} ago`
+}
+
+/** Doctor's expired claims, each with its release command. A row with no item id is left out: no command can name it. */
+export function expiredRows(doctor: Doctor | null, now: number, cli: Cli): ClaimRow[] {
+  return (doctor?.expiredClaims ?? [])
+    .filter(one => one.itemId !== '')
+    .map(one => ({ itemId: one.itemId, when: agoWords('lease ended', one.expiresAt, now), command: releaseCommand(one.itemId, cli, doctor?.path ?? '') }))
+}
+
+/** Doctor's lease-less claims older than 7 days, when its JSON carries them; none otherwise. */
+export function staleRows(doctor: Doctor | null, now: number, cli: Cli): ClaimRow[] {
+  return (doctor?.staleClaims ?? [])
+    .filter(one => one.itemId !== '')
+    .map(one => {
+      const age = one.claimedAt !== '' ? agoWords('claimed', one.claimedAt, now) : one.ageSeconds !== null ? `claimed ${spanOf(one.ageSeconds * 1000)} ago` : 'claimed'
+      return { itemId: one.itemId, when: `${age}, no lease`, command: releaseCommand(one.itemId, cli, doctor?.path ?? '') }
+    })
 }
 
 export type Needs = {

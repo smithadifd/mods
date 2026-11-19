@@ -2,6 +2,11 @@
 
 Release notes, newest first. Each mod carries its own version in its `plugin.json` and is tagged `<mod>--v<version>`; an entry names the mod it concerns.
 
+## Unreleased
+
+- ledger: Home draws the search index as dim information, not a warning colour, when it is `stale`, `behind` or `missing`, with one line under it naming doctor's reasons (sources added or changed) and what the next search does; the status text is unchanged, and a current index stays green and an index the ledger says cannot be built stays a warning.
+- ledger: Home lists the claims that need letting go, under `Expired claims` (doctor's `expired_claims`) and `Stale claims` (doctor's `stale_claims`, lease-less claims older than 7 days, from a ledger that sends the key; a ledger that does not draws no such section). Each row is the item id, how long ago the lease ended or the claim was taken, and the ledger's release command as plain text, written the way the pane itself runs the ledger: the configured command words, `--db` naming the database the pane read (doctor's resolved path, else the Database option), a `cd` into the configured folder when there is one, then `state ITEM --status open`, every word quoted for a POSIX shell (for example `ledger --db /path/to/home.db state ITEM --status open`), ten rows at most per list. An id that is not a plain word, or a pane that knows no database path, gets no command: it would fall back to whatever `LEDGER_DB` names in the person's shell. The search-index line under a stale index shortens a long reason, never the explanation of what the next search does. The pane stays read-only: no write verb, no `ledger index`, no button that runs a command.
+
 ## ledger 0.3.0 — 2026-11-15
 
 The pane gains a By seat tab, and the Item screen gains a whole ticket record and a Documents section.
