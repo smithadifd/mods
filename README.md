@@ -55,7 +55,13 @@ claude plugin marketplace add https://github.com/smithadifd/mods.git#ledger--v0.
 claude plugin install ledger@mods
 ```
 
-Set the options when asked (pick the scope too: user, to have it in every session). At the prompt of a terminal session, the same two steps are `/plugin marketplace add https://github.com/smithadifd/mods.git#ledger--v0.3.0` then `/plugin install ledger@mods`. In the desktop app, where `/plugin` does not run, click + next to the prompt box, then Plugins, Add marketplace with `https://github.com/smithadifd/mods.git#ledger--v0.3.0`, then Add plugin.
+Set the options when asked (pick the scope too: user, to have it in every session). A non-interactive install asks nothing, so set them afterwards by sending `claude plugin configure` a JSON object of single-line strings on stdin, with the option names from the Options table below:
+
+```sh
+echo '{"command": "ledger", "db": "/path/to/ledger.db"}' | claude plugin configure ledger@mods --values-stdin
+```
+
+Leave an option out of the object to leave it alone: `claude plugin configure --help` says options left out keep their values, so on a first install an option you omit stays unset. Run `claude plugin configure ledger@mods` with no flag to see the options and which are unset. At the prompt of a terminal session, the same two steps are `/plugin marketplace add https://github.com/smithadifd/mods.git#ledger--v0.3.0` then `/plugin install ledger@mods`. In the desktop app, where `/plugin` does not run, click + next to the prompt box, then Plugins, Add marketplace with `https://github.com/smithadifd/mods.git#ledger--v0.3.0`, then Add plugin.
 
 Without the `#ledger--v0.3.0` the marketplace follows `main`, which can be ahead of the last tag and then installs code no release has carried. A marketplace added at a tag stays on that tag. To move to a newer release, remove the marketplace (see Uninstall) and add it again at the newer tag.
 
