@@ -65,7 +65,7 @@ Leave an option out of the object to leave it alone: `claude plugin configure --
 
 Without the `#ledger--v0.3.0` the marketplace follows `main`, which can be ahead of the last tag and then installs code no release has carried. A marketplace added at a tag stays on that tag. To move to a newer release, remove the marketplace (see Uninstall) and add it again at the newer tag.
 
-To run a mod from a clone instead, with a reload on every save, start a session with `claude --plugin-dir ~/code/mods/ledger`, or name the folder in `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of `~/.claude/settings.json`; the mod's options then live under `pluginConfigs.ledger.options` in the same file. Use one route, not both: a session that loads the same mod twice refuses the second `/ledger`.
+To run a mod from a clone instead, with a reload on every save, start a session with `claude --plugin-dir` pointed at the ledger folder of your clone, or name that folder in `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of the settings file under your install root; the mod's options then live under `pluginConfigs.ledger.options` in the same file. Use one route, not both: a session that loads the same mod twice refuses the second `/ledger`.
 
 ## Uninstall
 
@@ -96,7 +96,7 @@ Six tabs, each with a hotkey, and `/ledger <word>` opens straight to one:
 - **Decisions** (`d`). Every decision record, newest first: standing, day, who, item and effect. A row expands to the verbatim words the decision rests on, who recorded it and as what, the tags, and what superseded it. Filter by standing.
 - **Search** (`s`). A field over the ledger's own index; a hit on an item opens it.
 
-`/ledger NY-148` opens an item, and a word that names no item is searched for; `/ledger merge train` searches; `/ledger blocked` (or `ready`, `open`, `claimed`, `closed`) lists under that status; `/ledger needs` opens Needs you; `/ledger seats` opens By seat. `r` re-reads at any time. A pane opened on a path with no database yet draws the ledger's quick start instead of an error, and reads again when you press Refresh.
+`/ledger ITEM-1` opens an item, and a word that names no item is searched for; `/ledger phase close` searches; `/ledger blocked` (or `ready`, `open`, `claimed`, `closed`) lists under that status; `/ledger needs` opens Needs you; naming seats opens By seat. `r` re-reads at any time. A pane opened on a path with no database yet draws the ledger's quick start instead of an error, and reads again when you press Refresh.
 
 ### Options
 
