@@ -529,7 +529,7 @@ export type Asked =
 const ID = /^[A-Za-z][A-Za-z0-9._-]*$/
 
 /**
- * `/ledger`, `/ledger needs`, `/ledger seats`, `/ledger blocked`, `/ledger NY-148`, `/ledger merge train`:
+ * `/ledger`, `/ledger needs`, a seats argument, `/ledger blocked`, `/ledger ITEM-1`, `/ledger phase close`:
  * a screen, a status filter on the items list, one id, or words to search.
  */
 export function parseCommandArgs(args: string): Asked {
@@ -897,7 +897,7 @@ export function optionsOf(events: readonly Event[], askedEventId: number | null)
   return rows
 }
 
-/** `minted Oct 30 from roadmaps/x.md:69@abc · lease ends Nov 7 14:02`; empty when the log says neither. */
+/** `minted Oct 30 from notes/item.md:69@abc · lease ends Nov 7 14:02`; empty when the log says neither. */
 export function headerLine(header: ItemHeader): string {
   const parts: string[] = []
   if (header.createdAt !== null) parts.push(`minted ${dayOf(header.createdAt)}${header.source === null ? '' : ` from ${header.source}`}`)
